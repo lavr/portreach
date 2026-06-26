@@ -61,14 +61,16 @@ func (p *githubProvider) ID() string          { return p.id }
 func (p *githubProvider) DisplayName() string { return p.displayName }
 func (p *githubProvider) Type() string        { return TypeGitHub }
 
-// AuthCodeURL returns the GitHub authorization URL for the given state.
-func (p *githubProvider) AuthCodeURL(state string) string {
+// AuthCodeURL returns the GitHub authorization URL for the given state. GitHub
+// is not an OIDC provider, so nonce is ignored.
+func (p *githubProvider) AuthCodeURL(state, _ string) string {
 	return p.oauth.AuthCodeURL(state)
 }
 
 // Exchange swaps the authorization code for a token, then fetches the user and
 // their org memberships, mapping them into an Identity (Groups = org logins).
-func (p *githubProvider) Exchange(ctx context.Context, code string) (Identity, error) {
+// GitHub issues no id_token, so nonce is ignored.
+func (p *githubProvider) Exchange(ctx context.Context, code, _ string) (Identity, error) {
 	tok, err := p.oauth.Exchange(ctx, code)
 	if err != nil {
 		return Identity{}, fmt.Errorf("auth: github token exchange: %w", err)

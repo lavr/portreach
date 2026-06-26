@@ -46,7 +46,7 @@ func TestGitHubProviderMetadata(t *testing.T) {
 		t.Errorf("apiBase = %q, want https://api.github.com", p.apiBase)
 	}
 
-	url := p.AuthCodeURL("xyz-state")
+	url := p.AuthCodeURL("xyz-state", "")
 	if !strings.Contains(url, "state=xyz-state") {
 		t.Errorf("AuthCodeURL %q missing state", url)
 	}
@@ -68,7 +68,7 @@ func TestGitHubProviderEnterpriseAPIBase(t *testing.T) {
 	if p.apiBase != "https://github.corp/api/v3" {
 		t.Errorf("apiBase = %q, want https://github.corp/api/v3", p.apiBase)
 	}
-	if got := p.AuthCodeURL("s"); !strings.Contains(got, "github.corp/login/oauth/authorize") {
+	if got := p.AuthCodeURL("s", ""); !strings.Contains(got, "github.corp/login/oauth/authorize") {
 		t.Errorf("AuthCodeURL %q missing enterprise authorize endpoint", got)
 	}
 }
@@ -97,7 +97,7 @@ func TestGitHubExchangeMapsIdentity(t *testing.T) {
 
 	p := newTestGitHub(t, ts.URL, ts.Client())
 
-	id, err := p.Exchange(context.Background(), "the-code")
+	id, err := p.Exchange(context.Background(), "the-code", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestGitHubExchangeTokenError(t *testing.T) {
 	defer ts.Close()
 
 	p := newTestGitHub(t, ts.URL, ts.Client())
-	if _, err := p.Exchange(context.Background(), "bad"); err == nil {
+	if _, err := p.Exchange(context.Background(), "bad", ""); err == nil {
 		t.Fatal("expected token exchange error, got nil")
 	}
 }
@@ -139,7 +139,7 @@ func TestGitHubExchangeUserHTTPError(t *testing.T) {
 	defer ts.Close()
 
 	p := newTestGitHub(t, ts.URL, ts.Client())
-	if _, err := p.Exchange(context.Background(), "code"); err == nil {
+	if _, err := p.Exchange(context.Background(), "code", ""); err == nil {
 		t.Fatal("expected user fetch error, got nil")
 	}
 }
@@ -160,7 +160,7 @@ func TestGitHubExchangeEmptyLogin(t *testing.T) {
 	defer ts.Close()
 
 	p := newTestGitHub(t, ts.URL, ts.Client())
-	if _, err := p.Exchange(context.Background(), "code"); err == nil {
+	if _, err := p.Exchange(context.Background(), "code", ""); err == nil {
 		t.Fatal("expected empty-login error, got nil")
 	}
 }

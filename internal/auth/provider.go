@@ -21,8 +21,11 @@ type Provider interface {
 	// Type is the provider type ("github" or "gitlab").
 	Type() string
 	// AuthCodeURL returns the provider's authorization URL for the given
-	// opaque state value.
-	AuthCodeURL(state string) string
+	// opaque state value. nonce is the OIDC nonce bound to the request; it is
+	// used by OIDC providers (GitLab) and ignored by others (GitHub).
+	AuthCodeURL(state, nonce string) string
 	// Exchange swaps an authorization code for the authenticated Identity.
-	Exchange(ctx context.Context, code string) (Identity, error)
+	// nonce is verified against the OIDC id_token by providers that issue one
+	// (GitLab); it is ignored by others (GitHub).
+	Exchange(ctx context.Context, code, nonce string) (Identity, error)
 }

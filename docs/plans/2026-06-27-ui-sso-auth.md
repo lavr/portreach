@@ -136,14 +136,16 @@
 - [x] run tests — must pass before Task 5
 
 ### Task 5: GitLab provider (OIDC via go-oidc)
-- [ ] `internal/auth/gitlab.go` (`go-oidc/v3/oidc`): `oidc.NewProvider(ctx,
+- [x] `internal/auth/gitlab.go` (`go-oidc/v3/oidc`): `oidc.NewProvider(ctx,
       issuer=BaseURL)`, `oauth2.Config` scopes `openid profile email`
-- [ ] Exchange: verify `id_token` (nonce), read claims `preferred_username`/`sub`,
+- [x] Exchange: verify `id_token` (nonce), read claims `preferred_username`/`sub`,
       `name`, `groups`/`groups_direct` → `Identity` (Groups = GitLab groups)
-- [ ] thread OIDC `nonce` from auth-request into callback verification (stored in
-      the state cookie from Task 6)
-- [ ] write tests for claim→Identity mapping and nonce mismatch (hermetic fixture)
-- [ ] run tests — must pass before Task 6
+- [x] thread OIDC `nonce` from auth-request into callback verification (stored in
+      the state cookie from Task 6) — `Provider` interface extended to carry the
+      nonce through `AuthCodeURL(state, nonce)` + `Exchange(ctx, code, nonce)`;
+      GitHub ignores it. Task 6 will populate it from the state cookie.
+- [x] write tests for claim→Identity mapping and nonce mismatch (hermetic fixture)
+- [x] run tests — must pass before Task 6
 
 ### Task 6: Provider registry, login page (always buttons), auth handlers
 - [ ] `internal/auth/auth.go`: `Authenticator{cfg, providers map[string]Provider}`,
