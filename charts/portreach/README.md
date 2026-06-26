@@ -28,6 +28,17 @@ The UI lets anyone trigger outgoing TCP connections from every node — an SSRF
 surface. Expose it only on an internal network or behind authentication, and
 optionally restrict targets with `agent.allow` / `agent.deny` CIDR lists.
 
+### Authentication (optional SSO)
+
+Set `ui.auth.enabled=true` to put the UI behind multi-provider SSO (GitHub /
+GitHub Enterprise, GitLab / self-hosted). Create a Secret out of band holding the
+AES-256 session `cookieKey` plus each provider's client secret; the chart injects
+those as env vars and references them as `${ENV}` placeholders, so no secret is
+ever written into the rendered ConfigMap. `/healthz` stays public. Terminate TLS
+at the ingress — session cookies are `Secure`, so plain HTTP breaks the flow. See
+[`docs/configuration.md`](../../docs/configuration.md) for the full provider
+schema and allowlist semantics.
+
 ## Values
 
 | Key | Default | Description |
@@ -40,6 +51,13 @@ optionally restrict targets with `agent.allow` / `agent.deny` CIDR lists.
 | `ui.service.type` | `ClusterIP` | UI service type. |
 | `ui.service.port` | `80` | UI service port. |
 | `ui.ingress.enabled` | `false` | Enable the UI Ingress. |
+| `ui.auth.enabled` | `false` | Put the UI behind multi-provider SSO. Off = no login. |
+| `ui.auth.redirectURL` | `""` | OAuth callback URL; must match each provider's registered callback. |
+| `ui.auth.allowedUsers` | `[]` | Global user-login allowlist. Empty = any authenticated user. |
+| `ui.auth.existingSecret` | `""` | Secret holding `cookieKey` + each provider's client secret. Defaults to `<ui-fullname>-auth`. |
+| `ui.auth.cookieKeyEnv` | `PORTREACH_AUTH_COOKIE_KEY` | Env var injected with the AES-256 session cookie key. |
+| `ui.auth.cookieKeySecretKey` | `cookieKey` | Secret key holding the cookie key. |
+| `ui.auth.providers` | `[]` | Providers: `id`, `type`, `displayName`, `baseURL`, `clientID`, `clientSecretEnv`, `clientSecretKey`, `allowedOrgs`, `allowedGroups`. |
 | `agent.hostNetwork` | `true` | Run agents on host network (real node egress). |
 | `agent.port` | `8732` | Agent listen + hostPort. |
 | `agent.allow` | `""` | Allow-CIDR list (empty = allow all). |

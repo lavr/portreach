@@ -34,6 +34,10 @@ const oauthStateCookieName = "portreach_oauth_state"
 // oauthStateMaxAge bounds how long an in-flight login may take.
 const oauthStateMaxAge = 10 * time.Minute
 
+// oidcDiscoveryTimeout bounds the OIDC discovery request made at startup so a
+// slow or unreachable issuer fails fast rather than hanging UI boot indefinitely.
+const oidcDiscoveryTimeout = 15 * time.Second
+
 //go:embed templates/login.html templates/denied.html
 var templatesFS embed.FS
 
@@ -87,7 +91,9 @@ func New(cfg *Config, opts ...Option) (*Authenticator, error) {
 		case TypeGitHub:
 			p = newGitHubProvider(pc, cfg.RedirectURL)
 		case TypeGitLab:
-			p, err = newGitLabProvider(context.Background(), pc, cfg.RedirectURL)
+			dctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
+			p, err = newGitLabProvider(dctx, pc, cfg.RedirectURL)
+			cancel()
 		default:
 			err = fmt.Errorf("auth: unknown provider type %q", pc.Type)
 		}

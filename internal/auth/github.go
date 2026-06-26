@@ -96,7 +96,9 @@ func (p *githubProvider) Exchange(ctx context.Context, code, _ string) (Identity
 	var orgs []struct {
 		Login string `json:"login"`
 	}
-	if err := p.getJSON(ctx, client, tok, p.apiBase+"/user/orgs", &orgs); err != nil {
+	// per_page=100 lifts the default 30-org cap so users in many orgs don't get a
+	// truncated membership list, which would silently deny an allowlisted org.
+	if err := p.getJSON(ctx, client, tok, p.apiBase+"/user/orgs?per_page=100", &orgs); err != nil {
 		return Identity{}, fmt.Errorf("auth: github get orgs: %w", err)
 	}
 	groups := make([]string, 0, len(orgs))

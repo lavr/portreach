@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -395,6 +397,89 @@ func TestLogoutClearsSession(t *testing.T) {
 	sc := sessionCookie(rec)
 	if sc == nil || sc.MaxAge >= 0 {
 		t.Errorf("logout should expire the session cookie, got %+v", sc)
+	}
+}
+
+func TestNewBuildsProvidersInOrder(t *testing.T) {
+	cfg := &Config{
+		RedirectURL: "https://portreach.corp/auth/callback",
+		CookieKey:   testKey(9),
+		Providers: []ProviderConfig{
+			{ID: "gh", Type: TypeGitHub, ClientID: "id1", ClientSecret: "s1"},
+			{ID: "ghe", Type: TypeGitHub, ClientID: "id2", ClientSecret: "s2", BaseURL: "https://ghe.corp"},
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a, err := New(cfg, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if len(a.providers) != 2 || a.providers["gh"] == nil || a.providers["ghe"] == nil {
+		t.Fatalf("providers = %v, want gh+ghe", a.providers)
+	}
+	if len(a.order) != 2 || a.order[0] != "gh" || a.order[1] != "ghe" {
+		t.Errorf("order = %v, want [gh ghe]", a.order)
+	}
+	if a.logger != logger {
+		t.Error("WithLogger was not applied by New")
+	}
+}
+
+func TestNewRejectsInvalidConfig(t *testing.T) {
+	// A missing clientSecret fails Validate before any provider is constructed.
+	cfg := &Config{
+		RedirectURL: "https://portreach.corp/auth/callback",
+		CookieKey:   testKey(1),
+		Providers:   []ProviderConfig{{ID: "gh", Type: TypeGitHub, ClientID: "id"}},
+	}
+	if _, err := New(cfg); err == nil {
+		t.Fatal("New should reject a config that fails Validate")
+	}
+}
+
+func TestCallbackMissingCode(t *testing.T) {
+	pcs := []ProviderConfig{{ID: "gh", Type: TypeGitHub}}
+	a := newTestAuth(nil, pcs, &fakeProvider{id: "gh", ptype: TypeGitHub, identity: Identity{Login: "alice"}})
+
+	state, sc := beginLogin(t, a, "gh")
+	req := httptest.NewRequest(http.MethodGet, CallbackPath+"?state="+state, nil)
+	req.AddCookie(sc)
+	rec := httptest.NewRecorder()
+	a.handleCallback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 on missing code", rec.Code)
+	}
+	if sessionCookie(rec) != nil {
+		t.Error("missing code must not set a session cookie")
+	}
+}
+
+func TestCallbackExpiredState(t *testing.T) {
+	pcs := []ProviderConfig{{ID: "gh", Type: TypeGitHub}}
+	a := newTestAuth(nil, pcs, &fakeProvider{id: "gh", ptype: TypeGitHub, identity: Identity{Login: "alice"}})
+
+	// Seal a state cookie whose embedded Expiry is already in the past.
+	rec0 := httptest.NewRecorder()
+	st := oauthState{State: "s", Nonce: "n", Provider: "gh", Expiry: time.Now().Add(-time.Minute).Unix()}
+	if err := a.setStateCookie(rec0, st); err != nil {
+		t.Fatalf("setStateCookie: %v", err)
+	}
+	sc := stateCookie(rec0)
+	if sc == nil {
+		t.Fatal("no state cookie set")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, CallbackPath+"?state=s&code=c", nil)
+	req.AddCookie(sc)
+	rec := httptest.NewRecorder()
+	a.handleCallback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 on expired state", rec.Code)
+	}
+	if sessionCookie(rec) != nil {
+		t.Error("expired state must not set a session cookie")
 	}
 }
 
