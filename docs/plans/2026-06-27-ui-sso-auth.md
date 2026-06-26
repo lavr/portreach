@@ -113,15 +113,15 @@
 - [x] run tests — must pass before Task 3
 
 ### Task 3: Sealed session cookie (stdlib AES-GCM)
-- [ ] create `internal/auth/session.go`: `Session{User, Name, Provider string,
+- [x] create `internal/auth/session.go`: `Session{User, Name, Provider string,
       Groups []string, Expiry int64}`
-- [ ] `seal(key, Session)` / `open(key, string)` via `crypto/aes`+`crypto/cipher`
+- [x] `seal(key, Session)` / `open(key, string)` via `crypto/aes`+`crypto/cipher`
       GCM, random nonce, base64url; reject on auth-tag mismatch and expiry
-- [ ] `setSessionCookie` / `clearSessionCookie`: `HttpOnly; Secure; SameSite=Lax;
+- [x] `setSessionCookie` / `clearSessionCookie`: `HttpOnly; Secure; SameSite=Lax;
       Path=/`, bounded `MaxAge`
-- [ ] write tests: roundtrip, tampered ciphertext rejected, wrong key rejected,
+- [x] write tests: roundtrip, tampered ciphertext rejected, wrong key rejected,
       expired session rejected
-- [ ] run tests — must pass before Task 4
+- [x] run tests — must pass before Task 4
 
 ### Task 4: Provider abstraction + GitHub provider
 - [ ] `internal/auth/provider.go`: `Identity{Login, Name string, Groups []string}`;
