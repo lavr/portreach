@@ -42,13 +42,11 @@ func (s Session) Expired(now time.Time) bool {
 	return s.Expiry != 0 && now.Unix() >= s.Expiry
 }
 
-// seal serializes s and encrypts it with AES-256-GCM under key, returning a
-// base64url (no padding) token of nonce||ciphertext. key must be 32 bytes.
-func seal(key []byte, s Session) (string, error) {
-	plaintext, err := json.Marshal(s)
-	if err != nil {
-		return "", fmt.Errorf("auth: marshal session: %w", err)
-	}
+// sealBytes encrypts plaintext with AES-256-GCM under key, returning a base64url
+// (no padding) token of nonce||ciphertext. key must be 32 bytes. It is the
+// shared primitive behind both the session cookie and the short-lived OAuth
+// state cookie.
+func sealBytes(key, plaintext []byte) (string, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return "", err
@@ -61,26 +59,46 @@ func seal(key []byte, s Session) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(sealed), nil
 }
 
+// openBytes decodes and decrypts a token produced by sealBytes, verifying the
+// GCM authentication tag. It does not interpret the plaintext.
+func openBytes(key []byte, token string) ([]byte, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return nil, fmt.Errorf("auth: decode token: %w", err)
+	}
+	gcm, err := newGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return nil, errors.New("auth: token too short")
+	}
+	nonce, ciphertext := raw[:gcm.NonceSize()], raw[gcm.NonceSize():]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("auth: authentication failed: %w", err)
+	}
+	return plaintext, nil
+}
+
+// seal serializes s and encrypts it with AES-256-GCM under key, returning a
+// base64url (no padding) token. key must be 32 bytes.
+func seal(key []byte, s Session) (string, error) {
+	plaintext, err := json.Marshal(s)
+	if err != nil {
+		return "", fmt.Errorf("auth: marshal session: %w", err)
+	}
+	return sealBytes(key, plaintext)
+}
+
 // open decodes and decrypts a token produced by seal, verifying the GCM
 // authentication tag and rejecting expired sessions. now is the reference time
 // for expiry (typically time.Now()).
 func open(key []byte, token string, now time.Time) (Session, error) {
 	var s Session
-	raw, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		return s, fmt.Errorf("auth: decode session: %w", err)
-	}
-	gcm, err := newGCM(key)
+	plaintext, err := openBytes(key, token)
 	if err != nil {
 		return s, err
-	}
-	if len(raw) < gcm.NonceSize() {
-		return s, errors.New("auth: session token too short")
-	}
-	nonce, ciphertext := raw[:gcm.NonceSize()], raw[gcm.NonceSize():]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return s, fmt.Errorf("auth: session authentication failed: %w", err)
 	}
 	if err := json.Unmarshal(plaintext, &s); err != nil {
 		return s, fmt.Errorf("auth: unmarshal session: %w", err)

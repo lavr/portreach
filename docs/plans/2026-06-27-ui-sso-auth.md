@@ -148,25 +148,25 @@
 - [x] run tests — must pass before Task 6
 
 ### Task 6: Provider registry, login page (always buttons), auth handlers
-- [ ] `internal/auth/auth.go`: `Authenticator{cfg, providers map[string]Provider}`,
+- [x] `internal/auth/auth.go`: `Authenticator{cfg, providers map[string]Provider}`,
       `New(cfg) (*Authenticator, error)` building one Provider per ProviderConfig
-- [ ] `/auth/login`: **always render a login page** listing a button per provider
+- [x] `/auth/login`: **always render a login page** listing a button per provider
       (label = `DisplayName`, else localized `Sign in with <type>`), each linking
       `/auth/login?provider=<id>`; `?provider=<id>` → that provider's redirect.
       (Single provider still shows its one button — no auto-redirect.)
-- [ ] state cookie (sealed) carries random `state`, OIDC `nonce`, chosen
+- [x] state cookie (sealed) carries random `state`, OIDC `nonce`, chosen
       `provider` id; short-lived
-- [ ] `/auth/callback`: validate state cookie, pick provider by stored id,
+- [x] `/auth/callback`: validate state cookie, pick provider by stored id,
       `Exchange`, enforce per-provider org/group + global user allowlist (empty =
       allow any), set session cookie (`User`+`Provider`), redirect `/`; 403 page on
       denial
-- [ ] `/auth/logout`: clear session cookie, redirect `/`
-- [ ] add localized `login.html` + `denied.html` templates (use the i18n localizer
+- [x] `/auth/logout`: clear session cookie, redirect `/`
+- [x] add localized `login.html` + `denied.html` templates (use the i18n localizer
       from Task 2; button labels from `DisplayName`)
-- [ ] write tests: login page lists all providers (1 and ≥2), localized in en/ru,
+- [x] write tests: login page lists all providers (1 and ≥2), localized in en/ru,
       `?provider` selection, state mismatch → 400, allowlist deny → 403, happy path
       sets session and authenticates a follow-up request
-- [ ] run tests — must pass before Task 7
+- [x] run tests — must pass before Task 7
 
 ### Task 7: Localize the existing UI form/results page
 - [ ] refactor `internal/ui/web/index.html` to pull all visible strings via the
