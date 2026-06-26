@@ -79,24 +79,25 @@
 ## Implementation Steps
 
 ### Task 1: Multi-provider auth config (YAML + env interpolation)
-- [ ] add deps: `go get golang.org/x/oauth2 github.com/coreos/go-oidc/v3
+- [x] add deps: `go get golang.org/x/oauth2 github.com/coreos/go-oidc/v3
       golang.org/x/text gopkg.in/yaml.v3`, `go mod tidy` (first external deps —
-      commit `go.sum`)
-- [ ] create `internal/auth/config.go`: `Config{RedirectURL, CookieKey []byte,
+      commit `go.sum`) — `go mod tidy` prunes deps not yet imported; oauth2/
+      go-oidc/x/text get re-added in their tasks. yaml.v3 + `go.sum` committed now.
+- [x] create `internal/auth/config.go`: `Config{RedirectURL, CookieKey []byte,
       AllowedUsers []string, Providers []ProviderConfig}`; `ProviderConfig{ID,
       Type (github|gitlab), DisplayName, BaseURL, ClientID, ClientSecret,
       AllowedOrgs, AllowedGroups []string}`
-- [ ] `LoadConfig(path)`: parse YAML, expand `${ENV}` in string fields (secrets/
+- [x] `LoadConfig(path)`: parse YAML, expand `${ENV}` in string fields (secrets/
       cookieKey never hardcoded), decode cookieKey (hex/base64 → 32 bytes)
-- [ ] `Config.Enabled()` → `len(Providers) > 0`; `Config.Validate()`: unique
+- [x] `Config.Enabled()` → `len(Providers) > 0`; `Config.Validate()`: unique
       non-empty IDs, known type, ClientID/ClientSecret present, RedirectURL set,
       32-byte CookieKey; default BaseURL + DisplayName per type
-- [ ] add `--auth-config` flag + `PORTREACH_AUTH_CONFIG` env to `runUI`; empty
+- [x] add `--auth-config` flag + `PORTREACH_AUTH_CONFIG` env to `runUI`; empty
       path = auth disabled
-- [ ] write tests: multi-provider YAML load, `${ENV}` interpolation, cookieKey
+- [x] write tests: multi-provider YAML load, `${ENV}` interpolation, cookieKey
       decode (good/bad), Validate (valid, dup id, unknown type, missing field,
       disabled-empty = valid)
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
 
 ### Task 2: i18n foundation (Accept-Language, en + ru catalogs)
 - [ ] create `internal/i18n`: embed message catalogs (`locales/en.json`,
