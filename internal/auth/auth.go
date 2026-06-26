@@ -38,6 +38,12 @@ const oauthStateMaxAge = 10 * time.Minute
 // slow or unreachable issuer fails fast rather than hanging UI boot indefinitely.
 const oidcDiscoveryTimeout = 15 * time.Second
 
+// callbackExchangeTimeout bounds the provider calls made during /auth/callback
+// (token exchange, user/org fetch, JWKS verification). The incoming request
+// context carries no deadline, so a stalled IdP would otherwise pin a callback
+// goroutine indefinitely.
+const callbackExchangeTimeout = 15 * time.Second
+
 //go:embed templates/login.html templates/denied.html
 var templatesFS embed.FS
 
@@ -218,7 +224,9 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := p.Exchange(r.Context(), code, st.Nonce)
+	ctx, cancel := context.WithTimeout(r.Context(), callbackExchangeTimeout)
+	defer cancel()
+	id, err := p.Exchange(ctx, code, st.Nonce)
 	if err != nil {
 		http.Error(w, "authentication failed", http.StatusBadGateway)
 		return

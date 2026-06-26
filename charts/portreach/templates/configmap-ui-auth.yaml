@@ -1,4 +1,7 @@
 {{- if .Values.ui.auth.enabled -}}
+{{- if not .Values.ui.auth.providers -}}
+{{- fail "ui.auth.enabled is true but ui.auth.providers is empty: a provider-less config leaves the UI unauthenticated. Configure at least one provider, or set ui.auth.enabled=false." -}}
+{{- end -}}
 {{- $a := .Values.ui.auth -}}
 {{- $auth := dict
       "redirectURL" $a.redirectURL

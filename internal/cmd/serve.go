@@ -18,7 +18,10 @@ func serveWithShutdown(srv *http.Server, deps Deps) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, _ = fmt.Fprintf(deps.Stdout, "listening on %s\n", srv.Addr)
+		// Banner goes to stderr: the UI reserves stdout for line-delimited
+		// audit JSON consumed by the ИБ log pipeline, so a plain-text line here
+		// would corrupt that stream.
+		_, _ = fmt.Fprintf(deps.Stderr, "listening on %s\n", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
