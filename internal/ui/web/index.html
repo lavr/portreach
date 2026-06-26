@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>portreach</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; }
+h1 { font-size: 1.4rem; }
+form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; margin-bottom: 1.5rem; }
+label { display: flex; flex-direction: column; font-size: .8rem; }
+input, select, button { padding: .4rem .5rem; font-size: 1rem; }
+button { cursor: pointer; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { border: 1px solid #8884; padding: .35rem .5rem; text-align: left; vertical-align: top; }
+th { background: #8881; }
+.ok { color: #1a7f37; font-weight: 600; }
+.fail { color: #b62324; font-weight: 600; }
+.err { color: #b62324; }
+.summary { margin: 1rem 0; font-weight: 600; }
+.muted { color: #8888; }
+</style>
+</head>
+<body>
+<h1>portreach &mdash; reachability from every node</h1>
+<form method="get" action="/">
+  <label>host
+    <input type="text" name="host" value="{{.Host}}" placeholder="dwh-clickhouse-pre" autofocus>
+  </label>
+  <label>port
+    <input type="text" name="port" value="{{.Port}}" placeholder="8123">
+  </label>
+  <label>proto
+    <select name="proto">
+      <option value="tcp"{{if eq .Proto "tcp"}} selected{{end}}>tcp</option>
+    </select>
+  </label>
+  <label>timeout
+    <input type="text" name="timeout" value="{{.Timeout}}" placeholder="5s">
+  </label>
+  <button type="submit">check</button>
+</form>
+
+{{if .Error}}
+<p class="err">{{.Error}}</p>
+{{end}}
+
+{{if .Submitted}}{{if not .Error}}
+<p class="summary">{{.Summary.OK}}/{{.Summary.Total}} agents reached {{.Host}}:{{.Port}}/{{.Proto}}</p>
+<table>
+  <thead>
+    <tr><th>node</th><th>src_ip</th><th>DNS</th><th>TCP</th><th>latency</th><th>error</th></tr>
+  </thead>
+  <tbody>
+  {{range .Results}}
+    <tr>
+      <td>{{if .Node}}{{.Node}}{{else}}<span class="muted">{{.Agent}}</span>{{end}}</td>
+      <td>{{.SrcIP}}</td>
+      <td>
+        {{- with .DNS -}}
+          {{if .Error}}<span class="err">{{.Error}}</span>{{else}}{{range .Resolved}}{{.}} {{end}}{{end}}
+        {{- else -}}<span class="muted">&mdash;</span>{{- end -}}
+      </td>
+      <td>
+        {{- with .TCP -}}
+          {{if .OK}}<span class="ok">open</span>{{else}}<span class="fail">closed</span>{{end}}
+        {{- else -}}<span class="muted">&mdash;</span>{{- end -}}
+      </td>
+      <td>{{with .TCP}}{{printf "%.1f" .MS}} ms{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+      <td class="err">{{.Error}}{{with .TCP}}{{if not .OK}}{{.Error}}{{end}}{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}{{end}}
+</body>
+</html>

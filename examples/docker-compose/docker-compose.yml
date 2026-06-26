@@ -1,0 +1,27 @@
+services:
+  agent1:
+    image: lavr/portreach
+    command: ["agent", "--listen", ":8732"]
+    environment:
+      NODE_NAME: agent1
+    expose:
+      - "8732"
+
+  agent2:
+    image: lavr/portreach
+    command: ["agent", "--listen", ":8732"]
+    environment:
+      NODE_NAME: agent2
+    expose:
+      - "8732"
+
+  ui:
+    image: lavr/portreach
+    command: ["ui", "--listen", ":8080"]
+    environment:
+      PORTREACH_AGENTS: agent1:8732,agent2:8732
+    ports:
+      - "8080:8080"
+    depends_on:
+      - agent1
+      - agent2

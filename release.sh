@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CHART_FILE="charts/portreach/Chart.yaml"
+
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+# Only the tag/push commands need to run from a release branch; read-only
+# commands like `status` (and `usage`) must work from any branch.
+require_release_branch() {
+    if [[ "$current_branch" != "main" && "$current_branch" != "master" ]]; then
+        echo "Error: release.sh must be run from the main or master branch (current: $current_branch)"
+        exit 1
+    fi
+}
+
+usage() {
+    echo "Usage: $0 <command>"
+    echo ""
+    echo "Commands:"
+    echo "  app      Tag app release"
+    echo "  chart    Update Chart.yaml and tag chart release"
+    echo "  both     Tag app + update chart + tag chart"
+    echo "  status   Show current versions and latest tags"
+    exit 1
+}
+
+# Trailing `|| true` keeps these usable under `set -euo pipefail`: with no
+# matching tags `grep` exits 1 and `pipefail` would otherwise abort the caller
+# (e.g. `last_tag=$(current_app_tag)` on a fresh repo with no app tags).
+current_app_tag() {
+    git tag --sort=-v:refname | grep -v chart | head -1 || true
+}
+
+current_chart_tag() {
+    git tag --sort=-v:refname | grep '^chart-' | head -1 | sed 's/^chart-//' || true
+}
+
+# commits_since prints the oneline log since the given tag, or the full history
+# when the tag is empty (fresh repo with no prior release).
+commits_since() {
+    local tag="$1"
+    if [[ -n "$tag" ]]; then
+        git log --oneline "${tag}..HEAD"
+    else
+        git log --oneline
+    fi
+}
+
+chart_version() {
+    grep '^version:' "$CHART_FILE" | awk '{print $2}'
+}
+
+# chart_base is the version to bump the next chart release from: the higher of the
+# latest chart tag and the committed Chart.yaml version. On a fresh repo with no
+# chart tags this is the Chart.yaml version, so the first release seeds from the
+# committed version instead of empty tag history — otherwise a "patch" pick would
+# bootstrap to 0.0.1 and downgrade a Chart.yaml already at 0.1.0. Preferring the
+# higher of the two also guards a manually bumped (but untagged) Chart.yaml.
+chart_base() {
+    printf '%s\n' "$(current_chart_tag)" "$(chart_version)" |
+        grep -v '^$' | sort -V | tail -1
+}
+
+chart_app_version() {
+    grep '^appVersion:' "$CHART_FILE" | awk '{print $2}' | tr -d '"'
+}
+
+bump() {
+    local version="$1" part="$2"
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$version"
+    # Default missing components to 0 so a fresh repo with no tags bootstraps to
+    # sensible first-release suggestions (patch 0.0.1, minor 0.1.0, major 1.0.0)
+    # instead of malformed strings like "..1" or ".1.0".
+    major=${major:-0} minor=${minor:-0} patch=${patch:-0}
+    case "$part" in
+        major) echo "$((major + 1)).0.0" ;;
+        minor) echo "${major}.$((minor + 1)).0" ;;
+        patch) echo "${major}.${minor}.$((patch + 1))" ;;
+    esac
+}
+
+PICKED_VERSION=""
+
+pick_version() {
+    local current="$1" label="$2"
+    local v_patch v_minor v_major
+    v_patch=$(bump "$current" patch)
+    v_minor=$(bump "$current" minor)
+    v_major=$(bump "$current" major)
+
+    echo "" > /dev/tty
+    echo "$label (current: ${current:-none}):" > /dev/tty
+    echo "  1) patch  -> $v_patch" > /dev/tty
+    echo "  2) minor  -> $v_minor" > /dev/tty
+    echo "  3) major  -> $v_major" > /dev/tty
+    printf "Choose [1/2/3]: " > /dev/tty
+    read -r choice < /dev/tty
+    case "$choice" in
+        1) PICKED_VERSION="$v_patch" ;;
+        2) PICKED_VERSION="$v_minor" ;;
+        3) PICKED_VERSION="$v_major" ;;
+        *) echo "Invalid choice" > /dev/tty; exit 1 ;;
+    esac
+}
+
+confirm() {
+    printf "%s [y/N] " "$1" > /dev/tty
+    read -r ans < /dev/tty
+    [[ "$ans" =~ ^[Yy]$ ]] || exit 0
+}
+
+status() {
+    echo "App:"
+    echo "  latest tag:            $(current_app_tag)"
+    echo "Chart:"
+    echo "  latest tag:            chart-$(current_chart_tag)"
+    echo "  Chart.yaml version:    $(chart_version)"
+    echo "  Chart.yaml appVersion: $(chart_app_version)"
+}
+
+release_app() {
+    pick_version "$(current_app_tag)" "App version"
+    local version="$PICKED_VERSION"
+
+    if git tag -l "$version" | grep -q .; then
+        echo "Error: tag $version already exists"
+        exit 1
+    fi
+
+    local last_tag
+    last_tag=$(current_app_tag)
+    echo ""
+    echo "Commits since ${last_tag:-start}:"
+    commits_since "$last_tag"
+    echo ""
+    confirm "Create tag $version?"
+
+    git tag "$version"
+    git push origin "$current_branch"
+    git push origin "$version"
+    echo "Pushed tag: $version"
+}
+
+release_chart() {
+    pick_version "$(chart_base)" "Chart version"
+    local version="$PICKED_VERSION"
+    local tag="chart-${version}"
+
+    if git tag -l "$tag" | grep -q .; then
+        echo "Error: tag $tag already exists"
+        exit 1
+    fi
+
+    local old_version
+    old_version=$(chart_version)
+
+    echo ""
+    echo "Will update Chart.yaml: version $old_version -> $version"
+    confirm "Proceed?"
+
+    sed -i '' "s/^version: .*/version: ${version}/" "$CHART_FILE"
+    git add "$CHART_FILE"
+    git commit -m "chart version bump"
+    git tag "$tag"
+
+    git push origin "$current_branch"
+    git push origin "$tag"
+    echo "Pushed tag: $tag"
+}
+
+release_both() {
+    pick_version "$(current_app_tag)" "App version"
+    local app_version="$PICKED_VERSION"
+    pick_version "$(chart_base)" "Chart version"
+    local chart_ver="$PICKED_VERSION"
+    local chart_tag="chart-${chart_ver}"
+
+    if git tag -l "$app_version" | grep -q .; then
+        echo "Error: tag $app_version already exists"
+        exit 1
+    fi
+    if git tag -l "$chart_tag" | grep -q .; then
+        echo "Error: tag $chart_tag already exists"
+        exit 1
+    fi
+
+    local old_chart_version
+    old_chart_version=$(chart_version)
+
+    echo ""
+    echo "Plan:"
+    echo "  1. Tag app: $app_version"
+    echo "  2. Update Chart.yaml: version $old_chart_version -> $chart_ver, appVersion -> $app_version"
+    echo "  3. Tag chart: $chart_tag"
+    local last_tag
+    last_tag=$(current_app_tag)
+    echo ""
+    echo "Commits since ${last_tag:-start}:"
+    commits_since "$last_tag"
+    echo ""
+    confirm "Proceed?"
+
+    git tag "$app_version"
+
+    sed -i '' "s/^version: .*/version: ${chart_ver}/" "$CHART_FILE"
+    sed -i '' "s/^appVersion: .*/appVersion: \"${app_version}\"/" "$CHART_FILE"
+    git add "$CHART_FILE"
+    git commit -m "chart version bump"
+    git tag "$chart_tag"
+
+    git push origin "$current_branch"
+    git push origin "$app_version"
+    git push origin "$chart_tag"
+    echo "Pushed tags: $app_version, $chart_tag"
+}
+
+case "${1:-}" in
+    app)    require_release_branch; release_app ;;
+    chart)  require_release_branch; release_chart ;;
+    both)   require_release_branch; release_both ;;
+    status) status ;;
+    *)      usage ;;
+esac

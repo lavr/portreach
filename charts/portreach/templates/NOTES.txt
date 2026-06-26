@@ -1,0 +1,23 @@
+portreach has been deployed.
+
+The agent DaemonSet runs one probe per node (hostNetwork: {{ .Values.agent.hostNetwork }}) on port {{ .Values.agent.port }}.
+The UI discovers agents via the headless service:
+  {{ include "portreach.agent.dnsName" . }}:{{ .Values.agent.port }}
+
+{{- if .Values.ui.ingress.enabled }}
+
+Open the web form at:
+{{- range .Values.ui.ingress.hosts }}
+  http{{ if $.Values.ui.ingress.tls }}s{{ end }}://{{ .host }}{{ (first .paths).path }}
+{{- end }}
+{{- else }}
+
+To open the web form, run:
+  kubectl port-forward svc/{{ include "portreach.ui.fullname" . }} {{ .Values.ui.service.port }}:{{ .Values.ui.service.port }}
+
+Then browse to:
+  http://localhost:{{ .Values.ui.service.port }}/
+
+WARNING: the UI lets anyone trigger outgoing connections from every node
+(an SSRF surface). Expose it only on an internal network or behind auth.
+{{- end }}

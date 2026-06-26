@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "portreach${EXT}" .
+
+      - name: Archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          if [ "$GOOS" = "windows" ]; then
+            zip "portreach-${GOOS}-${GOARCH}.zip" portreach.exe
+          else
+            tar czf "portreach-${GOOS}-${GOARCH}.tar.gz" portreach
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: portreach-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: portreach-*.*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/portreach-*
+
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          echo "darwin_arm64=$(sha256sum dist/portreach-darwin-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "darwin_amd64=$(sha256sum dist/portreach-darwin-amd64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha256sum dist/portreach-linux-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_amd64=$(sha256sum dist/portreach-linux-amd64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          TAG="${GITHUB_REF_NAME}"
+
+          cat > portreach.rb << 'FORMULA'
+          class Portreach < Formula
+            desc "Distributed network reachability checker (multi-point host:port probe)"
+            homepage "https://github.com/lavr/portreach"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/lavr/portreach/releases/download/TAG_PLACEHOLDER/portreach-darwin-arm64.tar.gz"
+                sha256 "SHA_DARWIN_ARM64"
+              else
+                url "https://github.com/lavr/portreach/releases/download/TAG_PLACEHOLDER/portreach-darwin-amd64.tar.gz"
+                sha256 "SHA_DARWIN_AMD64"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/lavr/portreach/releases/download/TAG_PLACEHOLDER/portreach-linux-arm64.tar.gz"
+                sha256 "SHA_LINUX_ARM64"
+              else
+                url "https://github.com/lavr/portreach/releases/download/TAG_PLACEHOLDER/portreach-linux-amd64.tar.gz"
+                sha256 "SHA_LINUX_AMD64"
+              end
+            end
+
+            def install
+              bin.install "portreach"
+            end
+
+            test do
+              assert_match "portreach", shell_output("#{bin}/portreach --help 2>&1", 0)
+            end
+          end
+          FORMULA
+
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" portreach.rb
+          sed -i "s/TAG_PLACEHOLDER/${TAG}/g" portreach.rb
+          sed -i "s/SHA_DARWIN_ARM64/${{ steps.sha.outputs.darwin_arm64 }}/g" portreach.rb
+          sed -i "s/SHA_DARWIN_AMD64/${{ steps.sha.outputs.darwin_amd64 }}/g" portreach.rb
+          sed -i "s/SHA_LINUX_ARM64/${{ steps.sha.outputs.linux_arm64 }}/g" portreach.rb
+          sed -i "s/SHA_LINUX_AMD64/${{ steps.sha.outputs.linux_amd64 }}/g" portreach.rb
+
+          gh api repos/lavr/homebrew-tap/contents/Formula/portreach.rb \
+            --method PUT \
+            --field message="portreach ${TAG}" \
+            --field content="$(base64 -w0 portreach.rb)" \
+            --field branch="master" \
+            --field sha="$(gh api repos/lavr/homebrew-tap/contents/Formula/portreach.rb --jq '.sha' 2>/dev/null || echo '')" \
+            2>/dev/null || \
+          gh api repos/lavr/homebrew-tap/contents/Formula/portreach.rb \
+            --method PUT \
+            --field message="portreach ${TAG}" \
+            --field content="$(base64 -w0 portreach.rb)" \
+            --field branch="master"
+
+  docker:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (alpine)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: alpine
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          tags: |
+            lavr/portreach:${{ github.ref_name }}
+            lavr/portreach:latest
+
+      - name: Build and push (rootless)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: rootless
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          tags: |
+            lavr/portreach:${{ github.ref_name }}-rootless
+            lavr/portreach:latest-rootless
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: lavr/portreach
+          readme-filepath: ./docs/DOCKERHUB.md

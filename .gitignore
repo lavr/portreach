@@ -1,0 +1,9 @@
+dist/
+/portreach
+coverage.out
+TODO.md
+.*.json
+.claude/
+
+.ralphex/progress/
+.ralphex/worktrees/

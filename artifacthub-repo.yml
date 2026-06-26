@@ -1,0 +1,6 @@
+# repositoryID is assigned by Artifact Hub after registering the chart repo
+# (oci://ghcr.io/lavr/charts). Fill it in once available — see Post-Completion.
+# repositoryID: <uuid>
+owners:
+  - name: lavr
+    email: s.lavrinenko@gmail.com

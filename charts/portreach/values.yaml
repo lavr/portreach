@@ -1,0 +1,73 @@
+image:
+  repository: lavr/portreach
+  # Defaults to <appVersion>-rootless (scratch-based, distroless image).
+  # To use the alpine-based image instead, set tag without the -rootless suffix:
+  #   image.tag: "0.1.0"
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Cluster DNS domain, used to build the headless agent service FQDN.
+clusterDomain: cluster.local
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# UI: aggregator Deployment + web form.
+ui:
+  replicaCount: 1
+  # Overall fan-out budget per check.
+  timeout: 8s
+  port: 8080
+  service:
+    type: ClusterIP
+    port: 80
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+      # - host: portreach.example.com
+      #   paths:
+      #     - path: /
+      #       pathType: Prefix
+    tls: []
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podLabels: {}
+  extraEnv: []
+
+# Agent: per-node probe DaemonSet on hostNetwork.
+agent:
+  hostNetwork: true
+  port: 8732
+  # Optional target policy (SSRF mitigation). Empty allow = allow all.
+  allow: ""
+  deny: ""
+  # Run an agent on every node, including tainted ones (control-plane etc.).
+  tolerations:
+    - operator: Exists
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+  nodeSelector: {}
+  affinity: {}
+  podAnnotations: {}
+  podLabels: {}
+  extraEnv: []

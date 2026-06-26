@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "portreach.agent.fullname" . }}
+  labels:
+    {{- include "portreach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: {{ .Values.agent.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "portreach.agent.selectorLabels" . | nindent 4 }}
