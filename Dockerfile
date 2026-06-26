@@ -1,0 +1,17 @@
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /portreach .
+
+FROM alpine:3.21 AS alpine
+RUN apk add --no-cache ca-certificates
+COPY --from=build /portreach /usr/local/bin/portreach
+ENTRYPOINT ["portreach"]
+
+FROM scratch AS rootless
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /portreach /portreach
+USER 65534:65534
+ENTRYPOINT ["/portreach"]

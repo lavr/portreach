@@ -1,0 +1,15 @@
+.git
+.github
+.ralphex
+dist
+coverage.out
+plans
+docs
+examples
+charts
+*.md
+Dockerfile
+.dockerignore
+.gitignore
+Makefile
+release.sh
