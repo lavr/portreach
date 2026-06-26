@@ -240,9 +240,9 @@
 - [x] verify `internal/auth` + `internal/i18n` coverage ≥ 80% (auth 83.9%, i18n 93.8%)
 
 ### Task 13: [Final] Knowledge + deps
-- [ ] re-read README/docs for accuracy; note the new `internal/auth` +
+- [x] re-read README/docs for accuracy; note the new `internal/auth` +
       `internal/i18n` packages, multi-provider model, and locale-add procedure
-- [ ] confirm `go.mod`/`go.sum` committed with the new deps
+- [x] confirm `go.mod`/`go.sum` committed with the new deps
 
 *Note: ralphex automatically moves completed plans to `docs/plans/completed/`.*
 
