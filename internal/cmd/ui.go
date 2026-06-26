@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -56,10 +57,15 @@ func runUI(args []string, deps Deps) error {
 // unauthenticated UI (backward compatible). A malformed or invalid enabled
 // config returns an error so runUI can fail fast with exit code 2.
 func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath string, out io.Writer) (http.Handler, error) {
+	// Audit events go to stdout as JSON for the ИБ log pipeline (ELK/Loki).
+	logger := slog.New(slog.NewJSONHandler(out, nil))
 	handler := ui.New(disc, timeout).Handler()
+	// Audit every reachability check, attributing it to the authenticated user
+	// (or anonymous when auth is off, since no identity reaches the context).
+	audited := auth.AuditCheck(logger, handler)
 
 	if authConfigPath == "" {
-		return handler, nil
+		return audited, nil
 	}
 
 	cfg, err := auth.LoadConfig(authConfigPath)
@@ -68,10 +74,10 @@ func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfig
 	}
 	if !cfg.Enabled() {
 		// A config file with no providers is valid and leaves the UI open.
-		return handler, nil
+		return audited, nil
 	}
 
-	authn, err := auth.New(cfg)
+	authn, err := auth.New(cfg, auth.WithLogger(logger))
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +88,9 @@ func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfig
 	}
 	_, _ = fmt.Fprintf(out, "ui: SSO auth enabled; providers: %s\n", strings.Join(ids, ", "))
 
-	return authn.Middleware(handler), nil
+	// Gate first (injecting Identity into the context), then audit so the
+	// check events carry the authenticated user.
+	return authn.Middleware(audited), nil
 }
 
 // envInt returns the integer value of env var name, or def when unset/invalid.

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -58,12 +59,14 @@ type Authenticator struct {
 	providers map[string]Provider
 	pcs       map[string]ProviderConfig // provider id -> config (allowlists)
 	order     []string                  // provider ids in config order
+	logger    *slog.Logger              // audit logger; nil falls back to slog.Default()
 }
 
 // New builds an Authenticator from cfg, constructing one Provider per configured
 // ProviderConfig. cfg is validated first. GitLab providers perform OIDC
-// discovery against their issuer, so New may make network calls.
-func New(cfg *Config) (*Authenticator, error) {
+// discovery against their issuer, so New may make network calls. Options (e.g.
+// WithLogger) customise the result.
+func New(cfg *Config, opts ...Option) (*Authenticator, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -71,6 +74,9 @@ func New(cfg *Config) (*Authenticator, error) {
 		cfg:       cfg,
 		providers: make(map[string]Provider, len(cfg.Providers)),
 		pcs:       make(map[string]ProviderConfig, len(cfg.Providers)),
+	}
+	for _, opt := range opts {
+		opt(a)
 	}
 	for _, pc := range cfg.Providers {
 		var (
@@ -213,9 +219,11 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.allowed(p.ID(), id) {
+		a.logLogin(r, id.Login, p.ID(), "denied")
 		a.renderDenied(w, loc)
 		return
 	}
+	a.logLogin(r, id.Login, p.ID(), "ok")
 
 	sess := Session{
 		User:     id.Login,

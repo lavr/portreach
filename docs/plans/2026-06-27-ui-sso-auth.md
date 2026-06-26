@@ -192,18 +192,18 @@
 - [x] run tests — must pass before Task 9
 
 ### Task 9: Audit logging for security (slog)
-- [ ] add an audit middleware in `internal/auth` (wraps the protected handler):
+- [x] add an audit middleware in `internal/auth` (wraps the protected handler):
       reads `Identity` from context (default `anonymous` when auth off) and emits
       `log/slog` JSON events
-- [ ] `event=login`: `user`, `provider`, `result` (ok|denied), `remote` — from
+- [x] `event=login`: `user`, `provider`, `result` (ok|denied), `remote` — from
       `/auth/callback`
-- [ ] `event=check`: `user`, `provider`, `target` (`host:port/proto` parsed from
+- [x] `event=check`: `user`, `provider`, `target` (`host:port/proto` parsed from
       query), `remote` — for `/api/check` and for `/` when a target is submitted
-- [ ] make the audit logger injectable (default `slog.Default()`) for test capture;
+- [x] make the audit logger injectable (default `slog.Default()`) for test capture;
       thread an `*slog.Logger` (stdout JSON) from `runUI` into the Authenticator
-- [ ] write tests asserting login + check events carry user/provider/target/remote,
+- [x] write tests asserting login + check events carry user/provider/target/remote,
       and `anonymous` when auth disabled
-- [ ] run tests — must pass before Task 10
+- [x] run tests — must pass before Task 10
 
 ### Task 10: Helm chart support
 - [ ] `charts/portreach/values.yaml`: `ui.auth` block (`enabled`, `redirectURL`,
