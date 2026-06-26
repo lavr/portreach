@@ -180,16 +180,16 @@
 - [x] run tests — must pass before Task 8
 
 ### Task 8: Gating middleware + wire into the UI command
-- [ ] `Middleware(next http.Handler) http.Handler`: serves `/auth/*`; lets
+- [x] `Middleware(next http.Handler) http.Handler`: serves `/auth/*`; lets
       `/healthz` through unauthenticated; else require valid session cookie or 302
       → `/auth/login`; inject the authenticated `Identity` into the request context
       (`WithIdentity`) for downstream audit logging
-- [ ] `internal/cmd/ui.go`: load `auth.Config`; if `Enabled()`, `auth.New` + wrap
+- [x] `internal/cmd/ui.go`: load `auth.Config`; if `Enabled()`, `auth.New` + wrap
       `ui.New(...).Handler()`; else raw handler unchanged; invalid config →
       `ExitError{Code:2}`; one-line startup notice (provider ids, no secrets)
-- [ ] write tests: disabled config → working unauthenticated UI; invalid config →
+- [x] write tests: disabled config → working unauthenticated UI; invalid config →
       exit 2; `/healthz` reachable without auth; protected path redirects
-- [ ] run tests — must pass before Task 9
+- [x] run tests — must pass before Task 9
 
 ### Task 9: Audit logging for security (slog)
 - [ ] add an audit middleware in `internal/auth` (wraps the protected handler):

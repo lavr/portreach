@@ -3,9 +3,12 @@ package cmd
 import (
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lavr/portreach/internal/auth"
@@ -34,25 +37,52 @@ func runUI(args []string, deps Deps) error {
 		return &ExitError{Code: 2, Err: err}
 	}
 
-	// Auth is disabled by default: empty path = pass-through. When a config is
-	// supplied we load and validate it early so misconfiguration fails fast.
-	// (Middleware wiring lands in a later task.)
-	if *authConfig != "" {
-		cfg, err := auth.LoadConfig(*authConfig)
-		if err != nil {
-			return &ExitError{Code: 2, Err: err}
-		}
-		if err := cfg.Validate(); err != nil {
-			return &ExitError{Code: 2, Err: err}
-		}
+	handler, err := buildUIHandler(disc, *timeout, *authConfig, deps.Stdout)
+	if err != nil {
+		return &ExitError{Code: 2, Err: err}
 	}
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           ui.New(disc, *timeout).Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second, // bound slow-header (Slowloris) clients
 	}
 	return serveWithShutdown(srv, deps)
+}
+
+// buildUIHandler assembles the UI HTTP handler, wrapping it in the SSO auth
+// middleware when an auth config is supplied and enabled. Auth is disabled by
+// default: an empty path or a provider-less config yields the raw,
+// unauthenticated UI (backward compatible). A malformed or invalid enabled
+// config returns an error so runUI can fail fast with exit code 2.
+func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath string, out io.Writer) (http.Handler, error) {
+	handler := ui.New(disc, timeout).Handler()
+
+	if authConfigPath == "" {
+		return handler, nil
+	}
+
+	cfg, err := auth.LoadConfig(authConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Enabled() {
+		// A config file with no providers is valid and leaves the UI open.
+		return handler, nil
+	}
+
+	authn, err := auth.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		ids = append(ids, p.ID)
+	}
+	_, _ = fmt.Fprintf(out, "ui: SSO auth enabled; providers: %s\n", strings.Join(ids, ", "))
+
+	return authn.Middleware(handler), nil
 }
 
 // envInt returns the integer value of env var name, or def when unset/invalid.
