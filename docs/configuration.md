@@ -176,6 +176,17 @@ Access control (per request, after a successful exchange):
   their GitLab `groups` claim is in that provider's `allowedGroups`;
 - else the callback returns a `403` denied page.
 
+> **Security caveat — `allowedUsers` is global, matched by login name only.**
+> An entry in `allowedUsers` is not bound to a specific provider, so it grants
+> access to anyone presenting that login on **any** configured provider. If one
+> of your providers is a public instance (`github.com`, `gitlab.com`) where
+> strangers can register arbitrary usernames, do **not** rely on `allowedUsers`
+> alone — an attacker who registers an allow-listed name on the public provider
+> would gain access. With a public provider in the mix, gate access with the
+> per-provider `allowedOrgs`/`allowedGroups` lists instead, and reserve
+> `allowedUsers` for providers whose usernames you control (e.g. a private
+> GitHub Enterprise / self-hosted GitLab).
+
 ### `${ENV}` interpolation
 
 Every string field (including provider fields and `allowedUsers` entries) is

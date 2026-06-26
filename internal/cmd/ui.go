@@ -3,7 +3,6 @@ package cmd
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -86,7 +85,9 @@ func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfig
 	for _, p := range cfg.Providers {
 		ids = append(ids, p.ID)
 	}
-	_, _ = fmt.Fprintf(out, "ui: SSO auth enabled; providers: %s\n", strings.Join(ids, ", "))
+	// Emit the startup banner through the same JSON logger so it does not
+	// interleave a plain-text line into the audit log pipeline on stdout.
+	logger.Info("ui: SSO auth enabled", slog.String("providers", strings.Join(ids, ", ")))
 
 	// Gate first (injecting Identity into the context), then audit so the
 	// check events carry the authenticated user.
