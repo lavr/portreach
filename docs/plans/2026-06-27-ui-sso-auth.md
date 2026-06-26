@@ -100,17 +100,17 @@
 - [x] run tests — must pass before Task 2
 
 ### Task 2: i18n foundation (Accept-Language, en + ru catalogs)
-- [ ] create `internal/i18n`: embed message catalogs (`locales/en.json`,
+- [x] create `internal/i18n`: embed message catalogs (`locales/en.json`,
       `locales/ru.json`); `Bundle` with all current UI strings as keys
-- [ ] `Match(acceptLanguage string) language.Tag` using `golang.org/x/text`
+- [x] `Match(acceptLanguage string) language.Tag` using `golang.org/x/text`
       `language.NewMatcher([en, ru])` — default **en** for missing/unknown
-- [ ] `Localizer(tag)` exposing `T(key, args...) string`; missing key falls back
+- [x] `Localizer(tag)` exposing `T(key, args...) string`; missing key falls back
       to en then to the key itself
-- [ ] helper to pull the localizer from an `*http.Request` (`Accept-Language`),
+- [x] helper to pull the localizer from an `*http.Request` (`Accept-Language`),
       reusable by both `internal/ui` and `internal/auth`
-- [ ] write tests: matcher (en default, `ru`, `ru-RU`, unknown → en, empty → en),
+- [x] write tests: matcher (en default, `ru`, `ru-RU`, unknown → en, empty → en),
       `T` lookup + fallback, all en keys present in ru (no missing translations)
-- [ ] run tests — must pass before Task 3
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Sealed session cookie (stdlib AES-GCM)
 - [ ] create `internal/auth/session.go`: `Session{User, Name, Provider string,

@@ -1,0 +1,28 @@
+{
+  "app.title": "portreach",
+  "app.heading": "portreach — reachability from every node",
+
+  "form.host": "host",
+  "form.port": "port",
+  "form.proto": "proto",
+  "form.timeout": "timeout",
+  "form.check": "check",
+
+  "table.node": "node",
+  "table.src_ip": "src_ip",
+  "table.dns": "DNS",
+  "table.tcp": "TCP",
+  "table.latency": "latency",
+  "table.error": "error",
+  "result.open": "open",
+  "result.closed": "closed",
+  "result.summary": "%s/%s agents reached %s:%s/%s",
+
+  "auth.login.title": "Sign in",
+  "auth.login.heading": "Sign in to portreach",
+  "auth.login.button": "Sign in with %s",
+  "auth.logout": "Sign out",
+  "auth.denied.title": "Access denied",
+  "auth.denied.heading": "Access denied",
+  "auth.denied.message": "Your account is not allowed to access this service."
+}
