@@ -229,15 +229,15 @@
 - [x] run `go test ./...` to confirm no regression
 
 ### Task 12: Verify acceptance criteria
-- [ ] verify all Overview requirements: both provider types, login page always
+- [x] verify all Overview requirements: both provider types, login page always
       shows buttons (incl. single provider), self-hosted base URL, per-provider
       allowlist, disabled pass-through, `/healthz` open, audit events, i18n en+ru
       via Accept-Language (default en)
-- [ ] verify edge cases: expired/tampered cookie, state/nonce mismatch, allowlist
+- [x] verify edge cases: expired/tampered cookie, state/nonce mismatch, allowlist
       denial, missing config fields, duplicate provider id, unknown Accept-Language
-- [ ] run full unit suite `go test ./... -v`
-- [ ] run `go vet ./...` and `helm lint charts/portreach` — clean
-- [ ] verify `internal/auth` + `internal/i18n` coverage ≥ 80%
+- [x] run full unit suite `go test ./... -v`
+- [x] run `go vet ./...` and `helm lint charts/portreach` — clean
+- [x] verify `internal/auth` + `internal/i18n` coverage ≥ 80% (auth 83.9%, i18n 93.8%)
 
 ### Task 13: [Final] Knowledge + deps
 - [ ] re-read README/docs for accuracy; note the new `internal/auth` +
