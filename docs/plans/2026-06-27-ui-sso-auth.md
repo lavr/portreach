@@ -124,16 +124,16 @@
 - [x] run tests — must pass before Task 4
 
 ### Task 4: Provider abstraction + GitHub provider
-- [ ] `internal/auth/provider.go`: `Identity{Login, Name string, Groups []string}`;
+- [x] `internal/auth/provider.go`: `Identity{Login, Name string, Groups []string}`;
       `Provider` interface: `ID()`, `DisplayName()`, `Type()`,
       `AuthCodeURL(state string) string`, `Exchange(ctx, code) (Identity, error)`
-- [ ] `internal/auth/github.go` (x/oauth2): endpoints from BaseURL (github.com →
+- [x] `internal/auth/github.go` (x/oauth2): endpoints from BaseURL (github.com →
       `login/oauth/*` + `api.github.com`; Enterprise → `<base>/login/oauth/*` +
       `<base>/api/v3`); scopes `read:org read:user`
-- [ ] Exchange: `GET /user` + `GET /user/orgs` → `Identity` (Groups = orgs)
-- [ ] write tests with `httptest` faking token + `/user` + `/user/orgs`; assert
+- [x] Exchange: `GET /user` + `GET /user/orgs` → `Identity` (Groups = orgs)
+- [x] write tests with `httptest` faking token + `/user` + `/user/orgs`; assert
       mapping and token/HTTP error handling
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: GitLab provider (OIDC via go-oidc)
 - [ ] `internal/auth/gitlab.go` (`go-oidc/v3/oidc`): `oidc.NewProvider(ctx,
