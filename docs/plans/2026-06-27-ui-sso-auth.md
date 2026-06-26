@@ -206,17 +206,17 @@
 - [x] run tests — must pass before Task 10
 
 ### Task 10: Helm chart support
-- [ ] `charts/portreach/values.yaml`: `ui.auth` block (`enabled`, `redirectURL`,
+- [x] `charts/portreach/values.yaml`: `ui.auth` block (`enabled`, `redirectURL`,
       `allowedUsers`, `providers: []` mirroring ProviderConfig, `existingSecret` /
       inline refs for each `clientSecret` + `cookieKey`)
-- [ ] render the auth YAML into a Secret/ConfigMap and mount it; pass
+- [x] render the auth YAML into a Secret/ConfigMap and mount it; pass
       `--auth-config <mountpath>`; inject `clientSecret`s + `cookieKey` via env
       `secretKeyRef` referenced as `${ENV}` in the config
-- [ ] `templates/deployment-ui.yaml`: add the mount + `--auth-config` arg + env
+- [x] `templates/deployment-ui.yaml`: add the mount + `--auth-config` arg + env
       when `ui.auth.enabled`
-- [ ] write/extend a `helm template` render assertion covering auth-on (≥2
+- [x] write/extend a `helm template` render assertion covering auth-on (≥2
       providers) and auth-off; run `helm lint`
-- [ ] run tests — must pass before Task 11
+- [x] run tests — must pass before Task 11
 
 ### Task 11: Documentation
 - [ ] `docs/configuration.md`: full auth-config YAML reference (providers,

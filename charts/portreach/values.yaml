@@ -49,6 +49,51 @@ ui:
   podAnnotations: {}
   podLabels: {}
   extraEnv: []
+  # Optional multi-provider SSO authentication for the UI. Disabled by default:
+  # with enabled=false the UI runs exactly as before (no login). When enabled,
+  # the rendered auth config is mounted as a file and passed via --auth-config.
+  #
+  # Secrets are NEVER stored in values: the cookie key and each provider's
+  # client secret are referenced from the config as ${ENV} placeholders and
+  # injected into the container via secretKeyRef from `existingSecret`. Create
+  # that Secret out-of-band, e.g.:
+  #   kubectl create secret generic portreach-ui-auth \
+  #     --from-literal=cookieKey="$(openssl rand -hex 32)" \
+  #     --from-literal=githubClientSecret=... \
+  #     --from-literal=gitlabClientSecret=...
+  auth:
+    enabled: false
+    # OAuth callback URL (must match each provider's registered callback).
+    redirectURL: ""
+    # Optional global user-login allowlist. Empty = any authenticated user.
+    allowedUsers: []
+    # Name of an existing Secret holding cookieKey + each provider's client
+    # secret (keys named below). Defaults to "<ui-fullname>-auth" if empty.
+    existingSecret: ""
+    # Cookie key: env var injected from the Secret and referenced in the config.
+    cookieKeyEnv: PORTREACH_AUTH_COOKIE_KEY
+    cookieKeySecretKey: cookieKey
+    # Providers mirror internal/auth ProviderConfig. Each provider's client
+    # secret is injected from `existingSecret` under `clientSecretKey` into the
+    # env var `clientSecretEnv`, referenced from the config as ${clientSecretEnv}.
+    providers: []
+      # - id: github
+      #   type: github                 # github | gitlab
+      #   displayName: GitHub          # optional; defaults per type
+      #   baseURL: ""                  # optional; self-hosted/Enterprise base URL
+      #   clientID: "abc"
+      #   clientSecretEnv: GITHUB_CLIENT_SECRET
+      #   clientSecretKey: githubClientSecret
+      #   allowedOrgs: [myorg]
+      #   allowedGroups: []
+      # - id: corp-gitlab
+      #   type: gitlab
+      #   displayName: "Corporate GitLab"
+      #   baseURL: https://gitlab.corp
+      #   clientID: "def"
+      #   clientSecretEnv: GITLAB_CLIENT_SECRET
+      #   clientSecretKey: gitlabClientSecret
+      #   allowedGroups: [infra, sre]
 
 # Agent: per-node probe DaemonSet on hostNetwork.
 agent:

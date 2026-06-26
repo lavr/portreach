@@ -1,0 +1,31 @@
+{{- if .Values.ui.auth.enabled -}}
+{{- $a := .Values.ui.auth -}}
+{{- $auth := dict
+      "redirectURL" $a.redirectURL
+      "cookieKey" (printf "${%s}" $a.cookieKeyEnv)
+      "allowedUsers" ($a.allowedUsers | default list) -}}
+{{- $providers := list -}}
+{{- range $a.providers -}}
+  {{- $p := dict
+        "id" .id
+        "type" .type
+        "clientID" .clientID
+        "clientSecret" (printf "${%s}" .clientSecretEnv) -}}
+  {{- with .displayName }}{{- $_ := set $p "displayName" . -}}{{- end -}}
+  {{- with .baseURL }}{{- $_ := set $p "baseURL" . -}}{{- end -}}
+  {{- with .allowedOrgs }}{{- $_ := set $p "allowedOrgs" . -}}{{- end -}}
+  {{- with .allowedGroups }}{{- $_ := set $p "allowedGroups" . -}}{{- end -}}
+  {{- $providers = append $providers $p -}}
+{{- end -}}
+{{- $_ := set $auth "providers" $providers -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "portreach.ui.fullname" . }}-auth
+  labels:
+    {{- include "portreach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+data:
+  auth.yaml: |
+    {{- dict "auth" $auth | toYaml | nindent 4 }}
+{{- end }}
