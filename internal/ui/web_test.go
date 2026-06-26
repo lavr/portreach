@@ -12,7 +12,21 @@ import (
 // get fetches a path from the server and returns status and body.
 func get(t *testing.T, base, path string) (int, string) {
 	t.Helper()
-	resp, err := http.Get(base + path)
+	return getLang(t, base, path, "")
+}
+
+// getLang fetches a path with an optional Accept-Language header and returns
+// status and body.
+func getLang(t *testing.T, base, path, accept string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, base+path, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	if accept != "" {
+		req.Header.Set("Accept-Language", accept)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
@@ -106,6 +120,92 @@ func TestIndexEscapesInput(t *testing.T) {
 	}
 	if !strings.Contains(body, "&lt;script&gt;") {
 		t.Errorf("expected escaped host echoed back:\n%s", body)
+	}
+}
+
+func TestIndexLocalizedFormEnglishDefault(t *testing.T) {
+	srv := httptest.NewServer(New(staticList{}, time.Second).Handler())
+	defer srv.Close()
+
+	// No Accept-Language → English default.
+	code, body := get(t, srv.URL, "/")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.Contains(body, `lang="en"`) {
+		t.Errorf("expected English <html lang>:\n%s", body)
+	}
+	for _, want := range []string{">host\n", ">port\n", ">proto\n", ">timeout\n", ">check<"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("English form missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestIndexLocalizedFormRussian(t *testing.T) {
+	srv := httptest.NewServer(New(staticList{}, time.Second).Handler())
+	defer srv.Close()
+
+	code, body := getLang(t, srv.URL, "/", "ru-RU,ru;q=0.9")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.Contains(body, `lang="ru"`) {
+		t.Errorf("expected Russian <html lang>:\n%s", body)
+	}
+	for _, want := range []string{"хост", "порт", "протокол", "таймаут", "проверить", "доступность с каждого узла"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Russian form missing %q:\n%s", want, body)
+		}
+	}
+	// English labels must not leak into the Russian render.
+	if strings.Contains(body, ">check<") {
+		t.Errorf("Russian page leaked English button label:\n%s", body)
+	}
+}
+
+func TestIndexLocalizedResultsRussian(t *testing.T) {
+	okAgent := fakeAgent(t, "node-ok", true)
+	defer okAgent.Close()
+	failAgent := fakeAgent(t, "node-fail", false)
+	defer failAgent.Close()
+
+	disc := staticList{{Addr: addr(okAgent)}, {Addr: addr(failAgent)}}
+	srv := httptest.NewServer(New(disc, 2*time.Second).Handler())
+	defer srv.Close()
+
+	code, body := getLang(t, srv.URL, "/?host=example&port=80", "ru")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	// Localized table headers, open/closed cells and summary line.
+	for _, want := range []string{"узел", "задержка", "открыт", "закрыт", "1/2 агентов достигли example:80/tcp"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Russian results missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestIndexLocalizedErrorRussian(t *testing.T) {
+	srv := httptest.NewServer(New(staticList{}, time.Second).Handler())
+	defer srv.Close()
+
+	// Missing host → localized required-field message.
+	code, body := getLang(t, srv.URL, "/?host=&port=80", "ru")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
+	}
+	if !strings.Contains(body, "требуется хост") {
+		t.Errorf("expected Russian host-required message:\n%s", body)
+	}
+
+	// Bad port → localized invalid-port message.
+	code, body = getLang(t, srv.URL, "/?host=example&port=abc", "ru")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
+	}
+	if !strings.Contains(body, "неверный порт") {
+		t.Errorf("expected Russian invalid-port message:\n%s", body)
 	}
 }
 

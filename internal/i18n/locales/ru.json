@@ -18,6 +18,10 @@
   "result.closed": "закрыт",
   "result.summary": "%s/%s агентов достигли %s:%s/%s",
 
+  "error.host_required": "требуется хост",
+  "error.bad_port": "неверный порт",
+  "error.bad_timeout": "неверный таймаут",
+
   "auth.login.title": "Вход",
   "auth.login.heading": "Вход в portreach",
   "auth.login.button": "Войти через %s",

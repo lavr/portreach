@@ -18,6 +18,10 @@
   "result.closed": "closed",
   "result.summary": "%s/%s agents reached %s:%s/%s",
 
+  "error.host_required": "host is required",
+  "error.bad_port": "invalid port",
+  "error.bad_timeout": "invalid timeout",
+
   "auth.login.title": "Sign in",
   "auth.login.heading": "Sign in to portreach",
   "auth.login.button": "Sign in with %s",

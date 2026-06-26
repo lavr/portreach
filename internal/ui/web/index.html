@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>portreach</title>
+<title>{{.L.T "app.title"}}</title>
 <style>
 :root { color-scheme: light dark; }
 body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; }
@@ -23,23 +23,23 @@ th { background: #8881; }
 </style>
 </head>
 <body>
-<h1>portreach &mdash; reachability from every node</h1>
+<h1>{{.L.T "app.heading"}}</h1>
 <form method="get" action="/">
-  <label>host
+  <label>{{.L.T "form.host"}}
     <input type="text" name="host" value="{{.Host}}" placeholder="dwh-clickhouse-pre" autofocus>
   </label>
-  <label>port
+  <label>{{.L.T "form.port"}}
     <input type="text" name="port" value="{{.Port}}" placeholder="8123">
   </label>
-  <label>proto
+  <label>{{.L.T "form.proto"}}
     <select name="proto">
       <option value="tcp"{{if eq .Proto "tcp"}} selected{{end}}>tcp</option>
     </select>
   </label>
-  <label>timeout
+  <label>{{.L.T "form.timeout"}}
     <input type="text" name="timeout" value="{{.Timeout}}" placeholder="5s">
   </label>
-  <button type="submit">check</button>
+  <button type="submit">{{.L.T "form.check"}}</button>
 </form>
 
 {{if .Error}}
@@ -47,10 +47,10 @@ th { background: #8881; }
 {{end}}
 
 {{if .Submitted}}{{if not .Error}}
-<p class="summary">{{.Summary.OK}}/{{.Summary.Total}} agents reached {{.Host}}:{{.Port}}/{{.Proto}}</p>
+<p class="summary">{{.L.T "result.summary" (printf "%d" .Summary.OK) (printf "%d" .Summary.Total) .Host .Port .Proto}}</p>
 <table>
   <thead>
-    <tr><th>node</th><th>src_ip</th><th>DNS</th><th>TCP</th><th>latency</th><th>error</th></tr>
+    <tr><th>{{.L.T "table.node"}}</th><th>{{.L.T "table.src_ip"}}</th><th>{{.L.T "table.dns"}}</th><th>{{.L.T "table.tcp"}}</th><th>{{.L.T "table.latency"}}</th><th>{{.L.T "table.error"}}</th></tr>
   </thead>
   <tbody>
   {{range .Results}}
@@ -64,7 +64,7 @@ th { background: #8881; }
       </td>
       <td>
         {{- with .TCP -}}
-          {{if .OK}}<span class="ok">open</span>{{else}}<span class="fail">closed</span>{{end}}
+          {{if .OK}}<span class="ok">{{$.L.T "result.open"}}</span>{{else}}<span class="fail">{{$.L.T "result.closed"}}</span>{{end}}
         {{- else -}}<span class="muted">&mdash;</span>{{- end -}}
       </td>
       <td>{{with .TCP}}{{printf "%.1f" .MS}} ms{{else}}<span class="muted">&mdash;</span>{{end}}</td>

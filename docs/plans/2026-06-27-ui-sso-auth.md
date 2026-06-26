@@ -169,15 +169,15 @@
 - [x] run tests — must pass before Task 7
 
 ### Task 7: Localize the existing UI form/results page
-- [ ] refactor `internal/ui/web/index.html` to pull all visible strings via the
+- [x] refactor `internal/ui/web/index.html` to pull all visible strings via the
       i18n localizer (labels host/port/proto/timeout, `check` button, table
       headers, summary, error copy); set `<html lang>` from the chosen tag
-- [ ] wire the request localizer into `pageData` in `internal/ui/web.go`
+- [x] wire the request localizer into `pageData` in `internal/ui/web.go`
       (`handleIndex`), defaulting to en
-- [ ] add the corresponding keys to `en.json` / `ru.json`
-- [ ] write tests: `handleIndex` renders ru labels with `Accept-Language: ru`, en
+- [x] add the corresponding keys to `en.json` / `ru.json`
+- [x] write tests: `handleIndex` renders ru labels with `Accept-Language: ru`, en
       by default, and check results page is localized
-- [ ] run tests — must pass before Task 8
+- [x] run tests — must pass before Task 8
 
 ### Task 8: Gating middleware + wire into the UI command
 - [ ] `Middleware(next http.Handler) http.Handler`: serves `/auth/*`; lets
