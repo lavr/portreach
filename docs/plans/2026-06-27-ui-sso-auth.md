@@ -219,14 +219,14 @@
 - [x] run tests — must pass before Task 11
 
 ### Task 11: Documentation
-- [ ] `docs/configuration.md`: full auth-config YAML reference (providers,
+- [x] `docs/configuration.md`: full auth-config YAML reference (providers,
       displayName, allowlists, `${ENV}` secrets), cookie-key generation
       (`openssl rand`), GitHub/GitLab OAuth app setup, the audit-log event format
       for ИБ, and the i18n behaviour (`Accept-Language`, en default, en+ru)
-- [ ] `docs/deployment.md`: Helm `ui.auth` example with two providers + secret
-- [ ] `README.md`: short "Authentication (optional SSO)" + "Localization" sections
-- [ ] document how to add a new locale (drop a `locales/<lang>.json`, add to matcher)
-- [ ] run `go test ./...` to confirm no regression
+- [x] `docs/deployment.md`: Helm `ui.auth` example with two providers + secret
+- [x] `README.md`: short "Authentication (optional SSO)" + "Localization" sections
+- [x] document how to add a new locale (drop a `locales/<lang>.json`, add to matcher)
+- [x] run `go test ./...` to confirm no regression
 
 ### Task 12: Verify acceptance criteria
 - [ ] verify all Overview requirements: both provider types, login page always
