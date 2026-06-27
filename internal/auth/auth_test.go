@@ -384,6 +384,31 @@ func TestCallbackExchangeError(t *testing.T) {
 	}
 }
 
+func TestCallbackHostedDomainMismatchDenied(t *testing.T) {
+	// A hosted-domain (Google hd) mismatch surfaces from Exchange and must render
+	// the 403 denied page rather than the 502 upstream-failure error.
+	pcs := []ProviderConfig{{ID: "google", Type: TypeGoogle}}
+	a := newTestAuth(nil, pcs, &fakeProvider{
+		id: "google", ptype: TypeGoogle, exchErr: errHostedDomainMismatch,
+	})
+
+	state, sc := beginLogin(t, a, "google")
+	req := httptest.NewRequest(http.MethodGet, CallbackPath+"?state="+state+"&code=c", nil)
+	req.AddCookie(sc)
+	rec := httptest.NewRecorder()
+	a.handleCallback(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 on hosted-domain mismatch", rec.Code)
+	}
+	if sessionCookie(rec) != nil {
+		t.Error("hd mismatch must not set a session cookie")
+	}
+	if !strings.Contains(rec.Body.String(), "Access denied") {
+		t.Errorf("denied page missing message:\n%s", rec.Body.String())
+	}
+}
+
 func TestLogoutClearsSession(t *testing.T) {
 	a := newTestAuth(nil, []ProviderConfig{{ID: "gh", Type: TypeGitHub}},
 		&fakeProvider{id: "gh", ptype: TypeGitHub})

@@ -135,9 +135,7 @@
   (added as a stopgap while the chart hard-coded `cluster.local`).
 - Re-run testlab → prodone → prodtwo; confirm `/api/check` returns per-node results.
 
-## Bonus (optional, same "flexibility" theme)
-- Image helper hard-codes the `-rootless` suffix as the default tag. Add
-  `image.variant: rootless|alpine` so operators switch image flavour without
-  spelling out a full tag (a network-debug tool benefits from an in-pod shell →
-  `alpine` is a reasonable per-deploy choice). Out of scope for the discovery fix;
-  track separately if wanted.
+## Related
+- Image tag flexibility (drop the magic `-rootless` default; make `image.tag` a
+  single, fully-overridable variable) is tracked separately in
+  `docs/plans/2026-06-27-image-tag-single-variable.md`.

@@ -110,6 +110,43 @@ func TestApplyPresetDefaults(t *testing.T) {
 	}
 }
 
+func TestGooglePresetDefaults(t *testing.T) {
+	// Google's issuer is fixed and BaseURL-independent; it uses the email claim
+	// for the login, openid/email/profile scopes, and emits no groups claim.
+	got := applyPreset(ProviderConfig{Type: TypeGoogle, BaseURL: "ignored"})
+	if got.Issuer != "https://accounts.google.com" {
+		t.Errorf("Issuer = %q, want https://accounts.google.com", got.Issuer)
+	}
+	if got.UsernameClaim != "email" {
+		t.Errorf("UsernameClaim = %q, want email", got.UsernameClaim)
+	}
+	if got.GroupsClaim != "" {
+		t.Errorf("GroupsClaim = %q, want empty (Google has no groups)", got.GroupsClaim)
+	}
+	if got.DisplayName != "Google" {
+		t.Errorf("DisplayName = %q, want Google", got.DisplayName)
+	}
+	if !reflect.DeepEqual(got.Scopes, googleScopes) {
+		t.Errorf("Scopes = %v, want %v", got.Scopes, googleScopes)
+	}
+}
+
+func TestGooglePresetHostedDomainPreserved(t *testing.T) {
+	// HostedDomain is a top-level field, not a preset default: it must survive
+	// preset expansion untouched and an explicit issuer must override the default.
+	got := applyPreset(ProviderConfig{
+		Type:         TypeGoogle,
+		HostedDomain: "corp.com",
+		Issuer:       "https://explicit.example",
+	})
+	if got.HostedDomain != "corp.com" {
+		t.Errorf("HostedDomain = %q, want corp.com", got.HostedDomain)
+	}
+	if got.Issuer != "https://explicit.example" {
+		t.Errorf("Issuer = %q, want explicit override", got.Issuer)
+	}
+}
+
 func TestApplyPresetExplicitOverrides(t *testing.T) {
 	in := ProviderConfig{
 		Type:          TypeOkta,

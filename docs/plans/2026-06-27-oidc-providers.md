@@ -87,14 +87,14 @@
 - [x] run tests — must pass before Task 3
 
 ### Task 3: Google Workspace preset + hosted-domain restriction
-- [ ] `google` preset: issuer `https://accounts.google.com`, scopes
+- [x] `google` preset: issuer `https://accounts.google.com`, scopes
       `openid email profile`, username claim `email`
-- [ ] enforce optional `HostedDomain` (`hd`): pass `hd` as an auth param and
+- [x] enforce optional `HostedDomain` (`hd`): pass `hd` as an auth param and
       verify the `hd` claim in the id_token on callback; reject mismatches (403)
-- [ ] note: Google has no group claim — access control via `AllowedUsers` (emails)
+- [x] note: Google has no group claim — access control via `AllowedUsers` (emails)
       and/or `HostedDomain`; document this
-- [ ] write tests: `hd` enforced (match allow, mismatch 403), email→Login mapping
-- [ ] run tests — must pass before Task 4
+- [x] write tests: `hd` enforced (match allow, mismatch 403), email→Login mapping
+- [x] run tests — must pass before Task 4
 
 ### Task 4: Config validation for oidc + presets
 - [ ] `Config.Validate()`: `oidc` requires `Issuer`; `okta`/`keycloak`/`entra`

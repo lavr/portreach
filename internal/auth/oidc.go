@@ -2,12 +2,19 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 )
+
+// errHostedDomainMismatch is returned by Exchange when a Google Workspace
+// provider has a HostedDomain restriction and the id_token's `hd` claim does not
+// match it. The callback handler treats this as an access denial (403) rather
+// than an upstream failure.
+var errHostedDomainMismatch = errors.New("auth: oidc hosted domain mismatch")
 
 // oidcProvider is a generic, standards-compliant OpenID Connect provider. It
 // drives the authorization-code flow against any issuer that exposes OIDC
@@ -85,9 +92,16 @@ func (p *oidcProvider) DisplayName() string { return p.displayName }
 func (p *oidcProvider) Type() string        { return p.typ }
 
 // AuthCodeURL returns the provider authorization URL, binding the OIDC nonce so
-// it can be checked against the returned id_token in Exchange.
+// it can be checked against the returned id_token in Exchange. When a hosted
+// domain is configured (Google `hd`), it is sent as an auth param so Google
+// pre-selects accounts from that Workspace; the claim is still verified on
+// callback since the param alone is not a security guarantee.
 func (p *oidcProvider) AuthCodeURL(state, nonce string) string {
-	return p.oauth.AuthCodeURL(state, oidc.Nonce(nonce))
+	opts := []oauth2.AuthCodeOption{oidc.Nonce(nonce)}
+	if p.hostedDomain != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("hd", p.hostedDomain))
+	}
+	return p.oauth.AuthCodeURL(state, opts...)
 }
 
 // Exchange swaps the authorization code for a token, verifies the id_token
@@ -115,6 +129,14 @@ func (p *oidcProvider) Exchange(ctx context.Context, code, nonce string) (Identi
 	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
 		return Identity{}, fmt.Errorf("auth: oidc parse claims: %w", err)
+	}
+
+	// Enforce the optional Google Workspace hosted-domain restriction: the
+	// id_token's `hd` claim must match the configured domain exactly.
+	if p.hostedDomain != "" {
+		if hd := claimString(claims, "hd"); hd != p.hostedDomain {
+			return Identity{}, fmt.Errorf("%w: token hd %q, want %q", errHostedDomainMismatch, hd, p.hostedDomain)
+		}
 	}
 
 	login := claimString(claims, p.usernameClaim)

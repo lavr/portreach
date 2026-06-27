@@ -231,6 +231,13 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	id, err := p.Exchange(ctx, code, st.Nonce)
 	if err != nil {
+		// A hosted-domain (Google `hd`) mismatch is an access denial, not an
+		// upstream failure: the login succeeded but the account is out of scope.
+		if errors.Is(err, errHostedDomainMismatch) {
+			a.logLogin(r, "", p.ID(), "denied")
+			a.renderDenied(w, loc)
+			return
+		}
 		http.Error(w, "authentication failed", http.StatusBadGateway)
 		return
 	}

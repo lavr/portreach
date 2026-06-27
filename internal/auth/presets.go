@@ -23,6 +23,14 @@ type preset struct {
 // oidcScopes is the default scope set shared by most presets.
 var oidcScopes = []string{oidc.ScopeOpenID, "profile", "email"}
 
+// googleScopes is the scope set for the Google Workspace preset. Google has no
+// groups claim, so access control relies on AllowedUsers (emails) and/or the
+// hosted-domain (hd) restriction rather than group membership.
+var googleScopes = []string{oidc.ScopeOpenID, "email", "profile"}
+
+// googleIssuer is Google's fixed OIDC issuer; it is independent of any BaseURL.
+func googleIssuer(ProviderConfig) string { return "https://accounts.google.com" }
+
 // baseURLIssuer treats the configured BaseURL as the issuer verbatim. Used by
 // presets whose issuer is fully deployment-specific (Okta org, Keycloak realm).
 func baseURLIssuer(pc ProviderConfig) string { return pc.BaseURL }
@@ -81,6 +89,15 @@ var presets = map[string]preset{
 		usernameClaim: "preferred_username",
 		groupsClaim:   "groups",
 		issuer:        entraIssuer,
+	},
+	TypeGoogle: {
+		displayName: "Google",
+		scopes:      googleScopes,
+		// Google identifies users by email and emits no groups claim; access is
+		// gated by AllowedUsers and/or the optional HostedDomain (hd).
+		usernameClaim: "email",
+		groupsClaim:   "",
+		issuer:        googleIssuer,
 	},
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -245,6 +246,85 @@ func TestOIDCExchangeEmptyLogin(t *testing.T) {
 
 	if _, err := p.Exchange(context.Background(), "code", "n1"); err == nil {
 		t.Fatal("expected empty-login error, got nil")
+	}
+}
+
+func TestOIDCHostedDomainMatchMapsEmail(t *testing.T) {
+	// Google-style provider: email is the login and a matching hd claim is
+	// accepted.
+	p, _ := newTestOIDC(t,
+		ProviderConfig{Type: TypeGoogle, UsernameClaim: "email", HostedDomain: "corp.com"},
+		func(string) map[string]any {
+			return map[string]any{
+				"sub":   "g-1",
+				"email": "alice@corp.com",
+				"name":  "Alice",
+				"nonce": "n1",
+				"hd":    "corp.com",
+			}
+		})
+
+	id, err := p.Exchange(context.Background(), "code", "n1")
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if id.Login != "alice@corp.com" {
+		t.Errorf("Login = %q, want alice@corp.com (email claim)", id.Login)
+	}
+}
+
+func TestOIDCHostedDomainMismatchRejected(t *testing.T) {
+	p, _ := newTestOIDC(t,
+		ProviderConfig{Type: TypeGoogle, UsernameClaim: "email", HostedDomain: "corp.com"},
+		func(string) map[string]any {
+			return map[string]any{
+				"sub":   "g-2",
+				"email": "mallory@evil.com",
+				"nonce": "n1",
+				"hd":    "evil.com",
+			}
+		})
+
+	_, err := p.Exchange(context.Background(), "code", "n1")
+	if err == nil {
+		t.Fatal("expected hosted-domain mismatch error, got nil")
+	}
+	if !errors.Is(err, errHostedDomainMismatch) {
+		t.Errorf("error = %v, want errHostedDomainMismatch", err)
+	}
+}
+
+func TestOIDCHostedDomainMissingClaimRejected(t *testing.T) {
+	// A consumer (non-Workspace) Google account omits hd entirely; with a hd
+	// restriction configured this must be rejected.
+	p, _ := newTestOIDC(t,
+		ProviderConfig{Type: TypeGoogle, UsernameClaim: "email", HostedDomain: "corp.com"},
+		func(string) map[string]any {
+			return map[string]any{
+				"sub":   "g-3",
+				"email": "someone@gmail.com",
+				"nonce": "n1",
+			}
+		})
+
+	if _, err := p.Exchange(context.Background(), "code", "n1"); !errors.Is(err, errHostedDomainMismatch) {
+		t.Fatalf("error = %v, want errHostedDomainMismatch for missing hd", err)
+	}
+}
+
+func TestOIDCHostedDomainAuthParam(t *testing.T) {
+	p, _ := newTestOIDC(t,
+		ProviderConfig{Type: TypeGoogle, HostedDomain: "corp.com"},
+		func(string) map[string]any { return map[string]any{} })
+
+	if got := p.AuthCodeURL("s", "n"); !strings.Contains(got, "hd=corp.com") {
+		t.Errorf("AuthCodeURL %q missing hd=corp.com param", got)
+	}
+
+	// Without a hosted domain the hd param must be absent.
+	p2, _ := newTestOIDC(t, ProviderConfig{}, func(string) map[string]any { return map[string]any{} })
+	if got := p2.AuthCodeURL("s", "n"); strings.Contains(got, "hd=") {
+		t.Errorf("AuthCodeURL %q should not contain hd param without HostedDomain", got)
 	}
 }
 
