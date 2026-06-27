@@ -38,6 +38,15 @@ func helmTemplate(t *testing.T, args ...string) string {
 	return string(out)
 }
 
+// helmTemplateErr runs `helm template` and returns the combined output and the
+// command error without failing the test, for asserting expected render failures.
+func helmTemplateErr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	full := append([]string{"template", "rel", chartDir}, args...)
+	out, err := exec.Command("helm", full...).CombinedOutput()
+	return string(out), err
+}
+
 // writeValues writes content to a temp values file and returns its path.
 func writeValues(t *testing.T, content string) string {
 	t.Helper()
@@ -199,6 +208,142 @@ func TestChartAuthOff(t *testing.T) {
 	all := helmTemplate(t)
 	if strings.Contains(all, "kind: ConfigMap") && strings.Contains(all, "-ui-auth") {
 		t.Errorf("auth-off render unexpectedly includes the auth ConfigMap\n%s", all)
+	}
+}
+
+// chartAppVersion reads appVersion from Chart.yaml so the image assertions track
+// the chart instead of hard-coding a version.
+func chartAppVersion(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(chartDir, "Chart.yaml"))
+	if err != nil {
+		t.Fatalf("read Chart.yaml: %v", err)
+	}
+	var doc struct {
+		AppVersion string `yaml:"appVersion"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("parse Chart.yaml: %v", err)
+	}
+	if doc.AppVersion == "" {
+		t.Fatal("Chart.yaml has no appVersion")
+	}
+	return doc.AppVersion
+}
+
+// imageRefs extracts every `image: "..."` value from a rendered manifest.
+func imageRefs(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "image:"); ok {
+			out = append(out, strings.Trim(strings.TrimSpace(v), `"`))
+		}
+	}
+	return out
+}
+
+// TestChartImage asserts image.tag is the single source of truth: empty defaults
+// to the plain appVersion (no -rootless suffix) and any explicit tag is used
+// verbatim, with the UI Deployment and agent DaemonSet always sharing one image.
+func TestChartImage(t *testing.T) {
+	requireHelm(t)
+	appVersion := chartAppVersion(t)
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default-appVersion-no-rootless", nil, "lavr/portreach:" + appVersion},
+		{"rootless-opt-in-verbatim", []string{"--set", "image.tag=" + appVersion + "-rootless"}, "lavr/portreach:" + appVersion + "-rootless"},
+		{"sha-tag-verbatim", []string{"--set", "image.tag=sha-abc123"}, "lavr/portreach:sha-abc123"},
+		{"custom-repository", []string{"--set", "image.repository=ghcr.io/me/portreach"}, "ghcr.io/me/portreach:" + appVersion},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ui := imageRefs(helmTemplate(t, append([]string{"--show-only", "templates/deployment-ui.yaml"}, tc.args...)...))
+			ds := imageRefs(helmTemplate(t, append([]string{"--show-only", "templates/daemonset-agent.yaml"}, tc.args...)...))
+			for label, got := range map[string][]string{"deployment-ui": ui, "daemonset-agent": ds} {
+				if len(got) == 0 {
+					t.Fatalf("%s: no image reference rendered", label)
+				}
+				for _, ref := range got {
+					if ref != tc.want {
+						t.Errorf("%s: image = %q, want %q", label, ref, tc.want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// agentsDNS extracts the PORTREACH_AGENTS_DNS env value from a rendered UI
+// Deployment. The env block renders the name on one line and its value on the
+// next, so we scan for the name line and read the following value line.
+func agentsDNS(t *testing.T, s string) string {
+	t.Helper()
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "name: PORTREACH_AGENTS_DNS") && i+1 < len(lines) {
+			v := strings.TrimSpace(lines[i+1])
+			v = strings.TrimPrefix(v, "value:")
+			return strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	t.Fatalf("PORTREACH_AGENTS_DNS not found in render\n%s", s)
+	return ""
+}
+
+// TestChartDiscoveryDNS asserts the agent-discovery name priority chain:
+// ui.agentsDnsName override wins verbatim; otherwise ui.discovery.mode picks
+// between relative (default), fqdn (uses clusterDomain) and bare. The namespace
+// is substituted from --namespace, and relative is independent of clusterDomain.
+func TestChartDiscoveryDNS(t *testing.T) {
+	requireHelm(t)
+	const svc = "rel-portreach-agent"
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default-relative", []string{"--namespace", "demo"}, svc + ".demo.svc"},
+		{"relative-ignores-clusterDomain", []string{"--namespace", "demo", "--set", "clusterDomain=example.com"}, svc + ".demo.svc"},
+		{"fqdn-uses-clusterDomain", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn", "--set", "clusterDomain=example.com"}, svc + ".demo.svc.example.com"},
+		{"fqdn-default-cluster-local", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn"}, svc + ".demo.svc.cluster.local"},
+		{"bare", []string{"--namespace", "demo", "--set", "ui.discovery.mode=bare"}, svc},
+		{"override-wins", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn", "--set", "ui.agentsDnsName=foo.bar"}, "foo.bar"},
+		{"namespace-substitution", []string{"--namespace", "other-ns"}, svc + ".other-ns.svc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := helmTemplate(t, append([]string{"--show-only", "templates/deployment-ui.yaml"}, tc.args...)...)
+			if got := agentsDNS(t, out); got != tc.want {
+				t.Errorf("PORTREACH_AGENTS_DNS = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestChartDiscoveryModeValidation asserts an unknown/typo'd discovery mode
+// fails the render loudly instead of silently falling back to relative, and that
+// a null ui.discovery block falls back to the relative default rather than
+// panicking on a nil-pointer deref.
+func TestChartDiscoveryModeValidation(t *testing.T) {
+	requireHelm(t)
+	const svc = "rel-portreach-agent"
+
+	// Wrong case is a typo, not one of relative|fqdn|bare: must fail the render.
+	if out, err := helmTemplateErr(t, "--namespace", "demo", "--set", "ui.discovery.mode=Fqdn"); err == nil {
+		t.Errorf("unknown discovery mode should fail render, got success:\n%s", out)
+	}
+
+	// ui.discovery: null must fall back to the relative default, not panic.
+	vals := writeValues(t, "ui:\n  discovery: null\n")
+	out := helmTemplate(t, "-f", vals, "--namespace", "demo", "--show-only", "templates/deployment-ui.yaml")
+	if got := agentsDNS(t, out); got != svc+".demo.svc" {
+		t.Errorf("null discovery: PORTREACH_AGENTS_DNS = %q, want %q", got, svc+".demo.svc")
 	}
 }
 

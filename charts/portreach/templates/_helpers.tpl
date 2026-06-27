@@ -74,17 +74,40 @@ Agent resource name.
 {{- end }}
 
 {{/*
-Headless agent service FQDN, used by the UI for DNS discovery.
+Headless agent service DNS name, used by the UI for agent discovery.
+Priority chain (portable by default):
+  1. ui.agentsDnsName  — raw override, used verbatim (escape hatch).
+  2. ui.discovery.mode — how the default name is built (default "relative"):
+       relative -> <svc>.<ns>.svc            (resolved via pod search domain)
+       fqdn     -> <svc>.<ns>.svc.<domain>   (uses clusterDomain)
+       bare     -> <svc>                      (in-namespace only)
 */}}
 {{- define "portreach.agent.dnsName" -}}
-{{- printf "%s.%s.svc.%s" (include "portreach.agent.fullname" .) .Release.Namespace .Values.clusterDomain }}
+{{- $svc := include "portreach.agent.fullname" . -}}
+{{- with .Values.ui.agentsDnsName -}}
+{{- . -}}
+{{- else -}}
+{{- $mode := (.Values.ui.discovery | default dict).mode | default "relative" -}}
+{{- if eq $mode "fqdn" -}}
+{{- printf "%s.%s.svc.%s" $svc .Release.Namespace .Values.clusterDomain -}}
+{{- else if eq $mode "bare" -}}
+{{- $svc -}}
+{{- else if eq $mode "relative" -}}
+{{- printf "%s.%s.svc" $svc .Release.Namespace -}}
+{{- else -}}
+{{- fail (printf "ui.discovery.mode must be relative, fqdn or bare (got %q)" $mode) -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*
-The image tag, defaulting to <appVersion>-rootless.
+The image reference. image.tag is the single source of truth:
+  set   -> used verbatim (0.1.0, 0.1.0-rootless, sha-abc123, latest, ...);
+  empty -> defaults to .Chart.AppVersion (plain, no -rootless suffix).
+Shared by the UI Deployment and agent DaemonSet so they never drift.
 */}}
 {{- define "portreach.image" -}}
-{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default (printf "%s-rootless" .Chart.AppVersion)) }}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
 {{- end }}
 
 {{/*
