@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /portr
 # OCI labels: org.opencontainers.image.source links the ghcr package to this
 # repo (which makes ghcr show the repo README and "About" metadata) — the ghcr
 # equivalent of Docker Hub's separate description push.
-FROM alpine:3.21 AS alpine
+FROM alpine:3.24 AS alpine
 LABEL org.opencontainers.image.source="https://github.com/lavr/portreach" \
       org.opencontainers.image.description="Distributed network reachability checker (per-node probe + web aggregator)" \
       org.opencontainers.image.licenses="MIT"
