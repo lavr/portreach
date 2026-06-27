@@ -1,0 +1,21 @@
+{{- if and .Values.ui.enabled .Values.ui.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "portreach.ui.fullname" . }}
+  labels:
+    {{- include "portreach.ui.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if hasKey .Values.ui.podDisruptionBudget "minAvailable" }}
+  minAvailable: {{ .Values.ui.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.ui.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "portreach.ui.selectorLabels" . | nindent 6 }}
+{{- end }}

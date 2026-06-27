@@ -1,0 +1,77 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if .Values.ui.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "portreach.ui.fullname" . }}
+  labels:
+    {{- include "portreach.ui.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "portreach.ui.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  {{- with .Values.networkPolicy.ui.ingress }}
+  ingress:
+    {{- tpl (toYaml .) $ | nindent 4 }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if .Values.agent.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "portreach.agent.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.agent.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.ui.extraEgress }}
+    {{- tpl (toYaml .) $ | nindent 4 }}
+    {{- end }}
+---
+{{- end }}
+{{- if .Values.agent.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "portreach.agent.fullname" . }}
+  labels:
+    {{- include "portreach.agent.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "portreach.agent.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  {{- if or .Values.ui.enabled .Values.networkPolicy.agent.extraIngress }}
+  ingress:
+    {{- if .Values.ui.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "portreach.ui.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.agent.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.agent.extraIngress }}
+    {{- tpl (toYaml .) $ | nindent 4 }}
+    {{- end }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+{{- end }}
+{{- end }}
