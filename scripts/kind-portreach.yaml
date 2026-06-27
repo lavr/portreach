@@ -1,7 +1,7 @@
 # kind cluster for portreach chart smoke-testing.
 # The point: a DNS domain that is NOT cluster.local, plus >1 worker node, so the
 # agent DaemonSet fans out and the UI's agent discovery is exercised the way it
-# is on real corporate clusters (e.g. Invitro's kubetesttwo.invitro.ru).
+# is on real corporate clusters (e.g. a custom domain like kube-dev.corp.example).
 #
 #   kind create cluster --name portreach-smoke --config scripts/kind-portreach.yaml
 #

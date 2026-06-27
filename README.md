@@ -94,9 +94,9 @@ or via the [systemd unit](examples/systemd/).
 Agent `GET /check?host=&port=&proto=tcp&timeout=5s`:
 
 ```json
-{"node":"sv-ku01w03","src_ip":"172.17.92.137","host":"sv-chpr01","port":8123,
+{"node":"node-w03","src_ip":"10.0.92.137","host":"db01","port":8123,
  "proto":"tcp",
- "dns":{"resolved":["172.17.8.68"],"cname":"sv-chpr01.invitro.ru.","ms":2.1},
+ "dns":{"resolved":["10.0.8.68"],"cname":"db01.corp.example.","ms":2.1},
  "tcp":{"ok":false,"ms":5002.0,"error":"i/o timeout"}}
 ```
 
