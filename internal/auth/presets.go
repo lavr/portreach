@@ -1,0 +1,135 @@
+package auth
+
+import (
+	"context"
+	"strings"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+)
+
+// preset captures the per-vendor defaults that turn a named provider type
+// (gitlab, okta, keycloak, entra, ...) into a generic OIDC provider. A preset
+// only supplies defaults: any field set explicitly on the ProviderConfig always
+// wins, so a deployment can point a preset at a custom issuer or remap claims.
+type preset struct {
+	displayName    string
+	scopes         []string
+	usernameClaim  string
+	groupsClaim    string
+	groupsFallback string                         // optional secondary groups claim
+	issuer         func(pc ProviderConfig) string // derives the issuer URL from config
+}
+
+// oidcScopes is the default scope set shared by most presets.
+var oidcScopes = []string{oidc.ScopeOpenID, "profile", "email"}
+
+// baseURLIssuer treats the configured BaseURL as the issuer verbatim. Used by
+// presets whose issuer is fully deployment-specific (Okta org, Keycloak realm).
+func baseURLIssuer(pc ProviderConfig) string { return pc.BaseURL }
+
+// gitlabIssuer defaults to gitlab.com when no self-hosted BaseURL is given.
+func gitlabIssuer(pc ProviderConfig) string {
+	if pc.BaseURL != "" {
+		return pc.BaseURL
+	}
+	return "https://gitlab.com"
+}
+
+// entraIssuer builds the Microsoft Entra ID (Azure AD) v2.0 issuer. BaseURL may
+// be either a bare tenant id/domain (the common case) or an already-complete
+// issuer URL, which is passed through unchanged.
+func entraIssuer(pc ProviderConfig) string {
+	tenant := strings.TrimSpace(pc.BaseURL)
+	if tenant == "" {
+		return ""
+	}
+	if strings.HasPrefix(tenant, "http://") || strings.HasPrefix(tenant, "https://") {
+		return tenant
+	}
+	return "https://login.microsoftonline.com/" + tenant + "/v2.0"
+}
+
+// presets maps each named preset type to its defaults. github and oidc are
+// deliberately absent: github is not OIDC, and oidc is the generic provider with
+// no preset defaults. google is added by the Google Workspace preset.
+var presets = map[string]preset{
+	TypeGitLab: {
+		displayName:    "GitLab",
+		scopes:         oidcScopes,
+		usernameClaim:  "preferred_username",
+		groupsClaim:    "groups",
+		groupsFallback: "groups_direct",
+		issuer:         gitlabIssuer,
+	},
+	TypeOkta: {
+		displayName:   "Okta",
+		scopes:        oidcScopes,
+		usernameClaim: "preferred_username",
+		groupsClaim:   "groups",
+		issuer:        baseURLIssuer,
+	},
+	TypeKeycloak: {
+		displayName:   "Keycloak",
+		scopes:        oidcScopes,
+		usernameClaim: "preferred_username",
+		groupsClaim:   "groups",
+		issuer:        baseURLIssuer,
+	},
+	TypeEntra: {
+		displayName:   "Microsoft",
+		scopes:        oidcScopes,
+		usernameClaim: "preferred_username",
+		groupsClaim:   "groups",
+		issuer:        entraIssuer,
+	},
+}
+
+// isPreset reports whether t names a preset that expands into an OIDC provider.
+func isPreset(t string) bool {
+	_, ok := presets[t]
+	return ok
+}
+
+// applyPreset fills the OIDC fields of pc from the matching preset's defaults,
+// leaving any explicitly-set field untouched. A type with no preset (oidc, or an
+// unknown type) is returned unchanged.
+func applyPreset(pc ProviderConfig) ProviderConfig {
+	ps, ok := presets[pc.Type]
+	if !ok {
+		return pc
+	}
+	if pc.Issuer == "" && ps.issuer != nil {
+		pc.Issuer = ps.issuer(pc)
+	}
+	if len(pc.Scopes) == 0 {
+		pc.Scopes = ps.scopes
+	}
+	if pc.UsernameClaim == "" {
+		pc.UsernameClaim = ps.usernameClaim
+	}
+	if pc.GroupsClaim == "" {
+		pc.GroupsClaim = ps.groupsClaim
+	}
+	if pc.DisplayName == "" {
+		pc.DisplayName = ps.displayName
+	}
+	return pc
+}
+
+// newPresetProvider builds an OIDC provider for a preset or the generic oidc
+// type. It expands preset defaults into the config, runs OIDC discovery, and
+// wires any preset-specific groups fallback (applied only when the deployment
+// did not override the groups claim).
+func newPresetProvider(ctx context.Context, pc ProviderConfig, redirectURL string) (*oidcProvider, error) {
+	ps, ok := presets[pc.Type]
+	overrodeGroups := pc.GroupsClaim != ""
+
+	p, err := newOIDCProvider(ctx, applyPreset(pc), redirectURL)
+	if err != nil {
+		return nil, err
+	}
+	if ok && !overrodeGroups {
+		p.groupsFallback = ps.groupsFallback
+	}
+	return p, nil
+}

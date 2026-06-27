@@ -17,14 +17,15 @@ import (
 // carry the username and groups. The named presets (gitlab, google, entra, okta,
 // keycloak) are thin sugar that fill these fields with per-vendor defaults.
 type oidcProvider struct {
-	id            string
-	displayName   string
-	typ           string // configured type ("oidc" or a preset name), returned by Type()
-	oauth         *oauth2.Config
-	verifier      *oidc.IDTokenVerifier
-	usernameClaim string
-	groupsClaim   string
-	hostedDomain  string // optional Google `hd` restriction (enforced by the google preset)
+	id             string
+	displayName    string
+	typ            string // configured type ("oidc" or a preset name), returned by Type()
+	oauth          *oauth2.Config
+	verifier       *oidc.IDTokenVerifier
+	usernameClaim  string
+	groupsClaim    string
+	groupsFallback string // optional secondary groups claim (e.g. GitLab groups_direct)
+	hostedDomain   string // optional Google `hd` restriction (enforced by the google preset)
 }
 
 // newOIDCProvider builds a generic OIDC provider from pc. It performs OIDC
@@ -124,10 +125,15 @@ func (p *oidcProvider) Exchange(ctx context.Context, code, nonce string) (Identi
 		return Identity{}, fmt.Errorf("auth: oidc returned empty login")
 	}
 
+	groups := claimStrings(claims, p.groupsClaim)
+	if len(groups) == 0 && p.groupsFallback != "" {
+		groups = claimStrings(claims, p.groupsFallback)
+	}
+
 	return Identity{
 		Login:  login,
 		Name:   claimString(claims, "name"),
-		Groups: claimStrings(claims, p.groupsClaim),
+		Groups: groups,
 	}, nil
 }
 

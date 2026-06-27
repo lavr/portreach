@@ -93,16 +93,15 @@ func New(cfg *Config, opts ...Option) (*Authenticator, error) {
 			p   Provider
 			err error
 		)
-		switch pc.Type {
-		case TypeGitHub:
+		switch {
+		case pc.Type == TypeGitHub:
 			p = newGitHubProvider(pc, cfg.RedirectURL)
-		case TypeGitLab:
+		case pc.Type == TypeOIDC || isPreset(pc.Type):
+			// The generic oidc type and every named preset (gitlab, okta,
+			// keycloak, entra, ...) share the same OIDC code path; presets just
+			// pre-fill issuer/scopes/claims defaults.
 			dctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
-			p, err = newGitLabProvider(dctx, pc, cfg.RedirectURL)
-			cancel()
-		case TypeOIDC:
-			dctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
-			p, err = newOIDCProvider(dctx, pc, cfg.RedirectURL)
+			p, err = newPresetProvider(dctx, pc, cfg.RedirectURL)
 			cancel()
 		default:
 			err = fmt.Errorf("auth: unknown provider type %q", pc.Type)

@@ -73,18 +73,18 @@
 - [x] run tests — must pass before Task 2
 
 ### Task 2: Named presets (gitlab, google, entra, okta, keycloak)
-- [ ] add a preset table mapping `Type` → default `{Issuer template, Scopes,
+- [x] add a preset table mapping `Type` → default `{Issuer template, Scopes,
       UsernameClaim, GroupsClaim, DisplayName}`; presets expand into an
       `oidcProvider` (explicit config fields always override preset defaults)
-- [ ] `gitlab`: issuer `BaseURL` or `https://gitlab.com`, groups claim `groups`
+- [x] `gitlab`: issuer `BaseURL` or `https://gitlab.com`, groups claim `groups`
       (keeps SSO-plan behaviour — backward compatible)
-- [ ] `okta` / `keycloak`: issuer = `BaseURL` (required), groups claim `groups`
-- [ ] `entra`: issuer `https://login.microsoftonline.com/<tenant>/v2.0`
+- [x] `okta` / `keycloak`: issuer = `BaseURL` (required), groups claim `groups`
+- [x] `entra`: issuer `https://login.microsoftonline.com/<tenant>/v2.0`
       (`tenant` from BaseURL/field), groups claim `groups`; document that group
       claims are object IDs and may need an app-registration "groups" claim
-- [ ] write tests: each preset expands to the expected issuer/claims; explicit
+- [x] write tests: each preset expands to the expected issuer/claims; explicit
       config overrides preset defaults
-- [ ] run tests — must pass before Task 3
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Google Workspace preset + hosted-domain restriction
 - [ ] `google` preset: issuer `https://accounts.google.com`, scopes

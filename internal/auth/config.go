@@ -15,11 +15,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Provider type identifiers.
+// Provider type identifiers. github is special (OAuth2 + REST); oidc is the
+// generic OpenID Connect provider; the remaining values are named presets that
+// expand into an oidc provider with per-vendor defaults (see presets.go).
 const (
-	TypeGitHub = "github"
-	TypeGitLab = "gitlab"
-	TypeOIDC   = "oidc"
+	TypeGitHub   = "github"
+	TypeGitLab   = "gitlab"
+	TypeOIDC     = "oidc"
+	TypeGoogle   = "google"
+	TypeEntra    = "entra"
+	TypeOkta     = "okta"
+	TypeKeycloak = "keycloak"
 )
 
 // Default OIDC claim names used when a provider does not override them.
@@ -203,8 +209,9 @@ func (c *Config) Validate() error {
 		}
 		seen[p.ID] = true
 		switch p.Type {
-		case TypeGitHub, TypeGitLab:
-			// no extra requirements here
+		case TypeGitHub, TypeGitLab, TypeGoogle, TypeEntra, TypeOkta, TypeKeycloak:
+			// presets supply their own defaults; deeper per-preset field
+			// requirements are enforced in a later validation pass
 		case TypeOIDC:
 			if p.Issuer == "" {
 				return fmt.Errorf("auth: provider %q (type oidc) requires an issuer", p.ID)
