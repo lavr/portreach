@@ -177,7 +177,7 @@ func (a *Authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 			Callback: callback,
 			Expiry:   time.Now().Add(oauthStateMaxAge).Unix(),
 		}
-		if err := a.setStateCookie(w, st); err != nil {
+		if err := a.setStateCookie(w, st, a.secureForRequest(r)); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -228,25 +228,52 @@ func (a *Authenticator) callbackOverride(r *http.Request) string {
 	if hostHeader == "" {
 		hostHeader = defaultForwardedHostHeader
 	}
-	protoHeader := a.cfg.ForwardedProtoHeader
-	if protoHeader == "" {
-		protoHeader = defaultForwardedProtoHeader
-	}
 
 	host := firstHeaderValue(r.Header.Get(hostHeader))
 	if host == "" {
 		host = r.Host
 	}
-	proto := firstHeaderValue(r.Header.Get(protoHeader))
-	if proto == "" {
-		if r.TLS != nil {
-			proto = "https"
-		} else {
-			proto = "http"
-		}
-	}
-	u := url.URL{Scheme: proto, Host: host, Path: CallbackPath}
+	u := url.URL{Scheme: a.requestScheme(r), Host: host, Path: CallbackPath}
 	return u.String()
+}
+
+// requestScheme reports the scheme ("https" or "http") the client used to reach
+// the service, read only from trusted sources: the configured forwarded-proto
+// header (default X-Forwarded-Proto) set by the ingress, falling back to the
+// connection's TLS state. It is the single scheme decision shared by the
+// host-derived callback URL and the cookie Secure flag so the two always agree.
+func (a *Authenticator) requestScheme(r *http.Request) string {
+	protoHeader := a.cfg.ForwardedProtoHeader
+	if protoHeader == "" {
+		protoHeader = defaultForwardedProtoHeader
+	}
+	if proto := firstHeaderValue(r.Header.Get(protoHeader)); proto != "" {
+		return proto
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// requestIsHTTPS reports whether the request reached the service over https.
+func (a *Authenticator) requestIsHTTPS(r *http.Request) bool {
+	return a.requestScheme(r) == "https"
+}
+
+// secureForRequest decides the Secure attribute for cookies set on this request,
+// honouring CookieSecure: always → true, never → false, auto (or empty) → Secure
+// only when the request is https. Over http, auto yields a non-secure cookie so
+// the browser will actually store it and the login flow can complete.
+func (a *Authenticator) secureForRequest(r *http.Request) bool {
+	switch a.cfg.CookieSecure {
+	case cookieSecureAlways:
+		return true
+	case cookieSecureNever:
+		return false
+	default: // auto / empty
+		return a.requestIsHTTPS(r)
+	}
 }
 
 // firstHeaderValue returns the first comma-separated token of a forwarded
@@ -285,13 +312,15 @@ func (a *Authenticator) redirectHostAllowed(callback string) bool {
 func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 	loc := i18n.FromRequest(r)
 
+	secure := a.secureForRequest(r)
+
 	st, err := a.readStateCookie(r)
 	if err != nil {
 		http.Error(w, "invalid auth state", http.StatusBadRequest)
 		return
 	}
 	// The state cookie is single-use regardless of the outcome below.
-	clearStateCookie(w)
+	clearStateCookie(w, secure)
 
 	q := r.URL.Query()
 	if got := q.Get("state"); got == "" || got != st.State {
@@ -338,7 +367,7 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 		Groups:   id.Groups,
 		Expiry:   time.Now().Add(sessionMaxAge).Unix(),
 	}
-	if err := setSessionCookie(w, a.cfg.CookieKey, sess); err != nil {
+	if err := setSessionCookie(w, a.cfg.CookieKey, sess, secure); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -347,7 +376,7 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 // handleLogout clears the session cookie and returns to the home page.
 func (a *Authenticator) handleLogout(w http.ResponseWriter, r *http.Request) {
-	clearSessionCookie(w)
+	clearSessionCookie(w, a.secureForRequest(r))
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -402,7 +431,8 @@ func (a *Authenticator) renderDenied(w http.ResponseWriter, loc *i18n.Localizer)
 }
 
 // setStateCookie seals st under the cookie key and writes the state cookie.
-func (a *Authenticator) setStateCookie(w http.ResponseWriter, st oauthState) error {
+// secure sets the cookie's Secure attribute (see Authenticator.secureForRequest).
+func (a *Authenticator) setStateCookie(w http.ResponseWriter, st oauthState, secure bool) error {
 	plaintext, err := json.Marshal(st)
 	if err != nil {
 		return err
@@ -416,7 +446,7 @@ func (a *Authenticator) setStateCookie(w http.ResponseWriter, st oauthState) err
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(oauthStateMaxAge.Seconds()),
 	})
@@ -444,14 +474,15 @@ func (a *Authenticator) readStateCookie(r *http.Request) (oauthState, error) {
 	return st, nil
 }
 
-// clearStateCookie expires the OAuth state cookie.
-func clearStateCookie(w http.ResponseWriter) {
+// clearStateCookie expires the OAuth state cookie. secure must match the value
+// used when the cookie was set so the browser reliably clears it.
+func clearStateCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     oauthStateCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

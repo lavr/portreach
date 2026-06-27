@@ -70,6 +70,10 @@ ui:
     allowedRedirectHosts: []
     forwardedHostHeader: ""
     forwardedProtoHeader: ""
+    # Secure attribute on the auth cookies: "" (app default) = auto (Secure only
+    # over https, so login works on both http and https); "always" requires
+    # https; "never" is for deliberate http-only. Over plain http use auto/never.
+    cookieSecure: ""
     existingSecret: ""
     cookieKey: ""
     cookieKeyEnv: PORTREACH_AUTH_COOKIE_KEY

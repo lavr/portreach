@@ -88,7 +88,7 @@ func TestMiddlewareValidSessionPassesAndInjectsIdentity(t *testing.T) {
 	sess := Session{User: "alice", Provider: "gh", Groups: []string{"infra"},
 		Expiry: time.Now().Add(time.Hour).Unix()}
 	rec := httptest.NewRecorder()
-	if err := setSessionCookie(rec, a.cfg.CookieKey, sess); err != nil {
+	if err := setSessionCookie(rec, a.cfg.CookieKey, sess, true); err != nil {
 		t.Fatalf("seal session: %v", err)
 	}
 	cookie := sessionCookie(rec)

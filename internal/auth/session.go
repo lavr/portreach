@@ -125,8 +125,9 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	return gcm, nil
 }
 
-// setSessionCookie seals s under key and writes it as the session cookie.
-func setSessionCookie(w http.ResponseWriter, key []byte, s Session) error {
+// setSessionCookie seals s under key and writes it as the session cookie. secure
+// sets the cookie's Secure attribute (see Authenticator.secureForRequest).
+func setSessionCookie(w http.ResponseWriter, key []byte, s Session, secure bool) error {
 	token, err := seal(key, s)
 	if err != nil {
 		return err
@@ -136,21 +137,22 @@ func setSessionCookie(w http.ResponseWriter, key []byte, s Session) error {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionMaxAge.Seconds()),
 	})
 	return nil
 }
 
-// clearSessionCookie expires the session cookie.
-func clearSessionCookie(w http.ResponseWriter) {
+// clearSessionCookie expires the session cookie. secure must match the value
+// used when the cookie was set so the browser reliably clears it.
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

@@ -257,6 +257,10 @@ func TestChartAuthHostDerived(t *testing.T) {
 			t.Errorf("configmap missing %q\n---\n%s", want, cm)
 		}
 	}
+	// cookieSecure is unset in these values → must be omitted from the config.
+	if strings.Contains(cm, "cookieSecure:") {
+		t.Errorf("unset cookieSecure should be omitted\n---\n%s", cm)
+	}
 
 	// The rendered config must load and validate (empty redirectURL is allowed).
 	var doc struct {

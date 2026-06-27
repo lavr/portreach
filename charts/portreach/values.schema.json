@@ -98,6 +98,7 @@
             },
             "forwardedHostHeader": { "type": "string" },
             "forwardedProtoHeader": { "type": "string" },
+            "cookieSecure": { "type": "string", "enum": ["", "auto", "always", "never"] },
             "existingSecret": { "type": "string" },
             "cookieKey": { "type": "string" },
             "cookieKeyEnv": { "type": "string", "minLength": 1 },

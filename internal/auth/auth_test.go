@@ -492,7 +492,7 @@ func TestCallbackExpiredState(t *testing.T) {
 	// Seal a state cookie whose embedded Expiry is already in the past.
 	rec0 := httptest.NewRecorder()
 	st := oauthState{State: "s", Nonce: "n", Provider: "gh", Expiry: time.Now().Add(-time.Minute).Unix()}
-	if err := a.setStateCookie(rec0, st); err != nil {
+	if err := a.setStateCookie(rec0, st, true); err != nil {
 		t.Fatalf("setStateCookie: %v", err)
 	}
 	sc := stateCookie(rec0)

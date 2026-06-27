@@ -11,6 +11,7 @@
 {{- with $a.allowedRedirectHosts }}{{- $_ := set $auth "allowedRedirectHosts" . -}}{{- end -}}
 {{- with $a.forwardedHostHeader }}{{- $_ := set $auth "forwardedHostHeader" . -}}{{- end -}}
 {{- with $a.forwardedProtoHeader }}{{- $_ := set $auth "forwardedProtoHeader" . -}}{{- end -}}
+{{- with $a.cookieSecure }}{{- $_ := set $auth "cookieSecure" . -}}{{- end -}}
 {{- $providers := list -}}
 {{- range $a.providers -}}
   {{- $id := required "ui.auth.providers[].id is required" .id -}}
