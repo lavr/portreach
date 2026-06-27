@@ -125,8 +125,8 @@
 - [x] verify `internal/auth` coverage ≥ 80% (actual: 89.6%)
 
 ### Task 7: [Final] Knowledge + docs polish
-- [ ] re-read docs for accuracy; note the generic-OIDC model and preset table
-- [ ] confirm `go.mod`/`go.sum` unchanged (go-oidc/oauth2 already present)
+- [x] re-read docs for accuracy; note the generic-OIDC model and preset table
+- [x] confirm `go.mod`/`go.sum` unchanged (go-oidc/oauth2 already present)
 
 *Note: ralphex automatically moves completed plans to `docs/plans/completed/`.*
 
