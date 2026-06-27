@@ -1,8 +1,10 @@
 image:
   repository: lavr/portreach
-  # Defaults to <appVersion>-rootless (scratch-based, distroless image).
-  # To use the alpine-based image instead, set tag without the -rootless suffix:
-  #   image.tag: "0.1.0"
+  # Single source of truth for the image tag.
+  #   empty => defaults to the chart appVersion (plain alpine-based image);
+  #   set   => used verbatim (e.g. "0.1.0", "sha-abc123", "latest").
+  # The scratch-based distroless (rootless) image is opt-in:
+  #   image.tag: "0.1.0-rootless"
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -10,7 +12,8 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Cluster DNS domain, used to build the headless agent service FQDN.
+# Cluster DNS domain. Used ONLY when ui.discovery.mode is "fqdn" to build the
+# fully-qualified agent service name. Ignored in the default "relative" mode.
 clusterDomain: cluster.local
 
 serviceAccount:
@@ -21,6 +24,17 @@ serviceAccount:
 # UI: aggregator Deployment + web form.
 ui:
   replicaCount: 1
+  # Raw override for the agent discovery DNS name the UI resolves. Used verbatim
+  # when non-empty (any FQDN, bare name, cross-namespace, or external name). Empty
+  # => the name is built from ui.discovery.mode below.
+  agentsDnsName: ""
+  discovery:
+    # How the agent discovery name is built when ui.agentsDnsName is empty:
+    #   relative -> <svc>.<ns>.svc           (default; resolved via the pod search
+    #               domain, so it is portable across any cluster DNS domain)
+    #   fqdn     -> <svc>.<ns>.svc.<clusterDomain>  (pins the cluster domain)
+    #   bare     -> <svc>                      (shortest; same-namespace only)
+    mode: relative
   # Overall fan-out budget per check.
   timeout: 8s
   port: 8080

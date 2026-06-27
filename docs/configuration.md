@@ -114,6 +114,13 @@ The UI resolves the A-records of the service name and probes each `ip:agent-port
 The point name comes from each agent's own `/check` response (`NODE_NAME`), not
 from DNS.
 
+On clusters whose DNS domain is **not** `cluster.local`, an absolute name like
+`portreach-agent.default.svc.cluster.local` resolves to NXDOMAIN. Prefer a
+search-domain-relative name (`portreach-agent.default.svc`, 2 dots < `ndots:5`)
+so the Go resolver appends the cluster's real search domains. The Helm chart
+builds this for you via `ui.discovery.mode` (default `relative`) — see
+[`deployment.md`](deployment.md#agent-discovery-cluster-domain-portability).
+
 ## Authentication (optional SSO)
 
 The UI can be put behind corporate single sign-on with **multiple providers at
