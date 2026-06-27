@@ -75,12 +75,12 @@ func newTestPreset(t *testing.T, pc ProviderConfig, claims func(issuer string) m
 
 func TestApplyPresetDefaults(t *testing.T) {
 	cases := []struct {
-		typ           string
-		baseURL       string
-		wantIssuer    string
-		wantUsername  string
-		wantGroups    string
-		wantDisplay   string
+		typ          string
+		baseURL      string
+		wantIssuer   string
+		wantUsername string
+		wantGroups   string
+		wantDisplay  string
 	}{
 		{TypeGitLab, "", "https://gitlab.com", "preferred_username", "groups", "GitLab"},
 		{TypeGitLab, "https://gitlab.corp", "https://gitlab.corp", "preferred_username", "groups", "GitLab"},

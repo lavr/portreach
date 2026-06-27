@@ -78,6 +78,80 @@ func newTestOIDC(t *testing.T, pc ProviderConfig, claims func(issuer string) map
 	return p, srv
 }
 
+// newIssuerServer starts a hermetic OIDC issuer serving discovery + JWKS. That
+// is enough for provider construction via auth.New, which runs OIDC discovery at
+// startup; token exchange is exercised by the per-provider tests above.
+func newIssuerServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+			srv.URL, srv.URL+"/authorize", srv.URL+"/token", srv.URL+"/jwks")
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, jwksJSON(key))
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestNewRegistersOIDCAndPresetProviders exercises the auth.New dispatch path
+// (the `pc.Type == TypeOIDC || isPreset(pc.Type)` branch) end-to-end: a generic
+// oidc provider and a preset must both be built via newPresetProvider, run real
+// discovery, and register with the right Type/DisplayName.
+func TestNewRegistersOIDCAndPresetProviders(t *testing.T) {
+	srv := newIssuerServer(t)
+	cfg := &Config{
+		RedirectURL: "https://portreach.corp/auth/callback",
+		CookieKey:   testKey(7),
+		Providers: []ProviderConfig{
+			{ID: "corp", Type: TypeOIDC, Issuer: srv.URL, ClientID: "c1", ClientSecret: "s1"},
+			{ID: "okta", Type: TypeOkta, BaseURL: srv.URL, ClientID: "c2", ClientSecret: "s2"},
+		},
+	}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if corp, ok := a.providers["corp"]; !ok || corp.Type() != TypeOIDC {
+		t.Errorf("oidc provider not registered correctly: ok=%v type=%v", ok, a.providers["corp"])
+	}
+	okta, ok := a.providers["okta"]
+	if !ok || okta.Type() != TypeOkta {
+		t.Fatalf("okta preset not registered correctly: ok=%v type=%v", ok, a.providers["okta"])
+	}
+	if okta.DisplayName() != "Okta" {
+		t.Errorf("okta DisplayName = %q, want Okta (preset default)", okta.DisplayName())
+	}
+}
+
+// TestNewPresetDiscoveryFailureReturnsError ensures New surfaces a discovery
+// error rather than registering a nil provider when the issuer is unreachable.
+func TestNewPresetDiscoveryFailureReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	cfg := &Config{
+		RedirectURL: "https://portreach.corp/auth/callback",
+		CookieKey:   testKey(7),
+		Providers: []ProviderConfig{
+			{ID: "dead", Type: TypeOIDC, Issuer: srv.URL, ClientID: "c", ClientSecret: "s"},
+		},
+	}
+	if _, err := New(cfg); err == nil {
+		t.Fatal("expected discovery failure error, got nil")
+	}
+}
+
 func TestOIDCProviderMetadataAndDefaults(t *testing.T) {
 	p, _ := newTestOIDC(t, ProviderConfig{DisplayName: "Corporate SSO"},
 		func(string) map[string]any { return map[string]any{} })

@@ -37,15 +37,15 @@ const (
 // cookieKeyLen is the required AES-256 key length in bytes.
 const cookieKeyLen = 32
 
-// Default base URLs and display names per provider type.
+// Default base URL and display name for github, the one non-OIDC provider.
+// OIDC presets (including gitlab) own their issuer/display-name defaults in the
+// preset table (see presets.go), so they are deliberately absent here.
 var (
 	defaultBaseURL = map[string]string{
 		TypeGitHub: "https://github.com",
-		TypeGitLab: "https://gitlab.com",
 	}
 	defaultDisplayName = map[string]string{
 		TypeGitHub: "GitHub",
-		TypeGitLab: "GitLab",
 	}
 )
 
