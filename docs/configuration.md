@@ -118,7 +118,7 @@ On clusters whose DNS domain is **not** `cluster.local`, an absolute name like
 `portreach-agent.default.svc.cluster.local` resolves to NXDOMAIN. Prefer a
 search-domain-relative name (`portreach-agent.default.svc`, 2 dots < `ndots:5`)
 so the Go resolver appends the cluster's real search domains. The Helm chart
-builds this for you via `ui.discovery.mode` (default `relative`) — see
+builds this for you via `ui.agentDiscovery.mode` (default `relative`) — see
 [`deployment.md`](deployment.md#agent-discovery-cluster-domain-portability).
 
 ## Authentication (optional SSO)
