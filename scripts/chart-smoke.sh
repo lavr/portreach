@@ -63,7 +63,7 @@ deploy() {
     -n "$NS" --create-namespace \
     --set image.tag="${IMAGE##*:}" \
     --set image.pullPolicy=IfNotPresent \
-    --set ui.discovery.mode="$mode" \
+    --set ui.agentDiscovery.mode="$mode" \
     "$@" \
     --wait --timeout 150s
   kubectl -n "$NS" rollout status \

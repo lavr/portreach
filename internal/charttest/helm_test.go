@@ -1,6 +1,5 @@
 // Package charttest renders the Helm chart with `helm template`/`helm lint` and
-// asserts the optional UI auth wiring is correct. It is hermetic apart from
-// requiring the `helm` binary on PATH; without it the tests skip.
+// asserts the chart wiring matches the binary configuration contract.
 package charttest
 
 import (
@@ -15,10 +14,8 @@ import (
 	"github.com/lavr/portreach/internal/auth"
 )
 
-// chartDir is the chart path relative to this package directory.
 const chartDir = "../../charts/portreach"
 
-// requireHelm skips the test when the helm binary is unavailable.
 func requireHelm(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -26,8 +23,6 @@ func requireHelm(t *testing.T) {
 	}
 }
 
-// helmTemplate runs `helm template` with the given extra args and returns
-// stdout, failing the test on error.
 func helmTemplate(t *testing.T, args ...string) string {
 	t.Helper()
 	full := append([]string{"template", "rel", chartDir}, args...)
@@ -38,8 +33,6 @@ func helmTemplate(t *testing.T, args ...string) string {
 	return string(out)
 }
 
-// helmTemplateErr runs `helm template` and returns the combined output and the
-// command error without failing the test, for asserting expected render failures.
 func helmTemplateErr(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	full := append([]string{"template", "rel", chartDir}, args...)
@@ -47,7 +40,6 @@ func helmTemplateErr(t *testing.T, args ...string) (string, error) {
 	return string(out), err
 }
 
-// writeValues writes content to a temp values file and returns its path.
 func writeValues(t *testing.T, content string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "values.yaml")
@@ -57,7 +49,7 @@ func writeValues(t *testing.T, content string) string {
 	return p
 }
 
-const authOnValues = `
+const authExternalValues = `
 ui:
   auth:
     enabled: true
@@ -76,8 +68,6 @@ ui:
         displayName: "Corporate GitLab"
         baseURL: https://gitlab.corp
         clientID: glid
-        clientSecretEnv: GITLAB_CLIENT_SECRET
-        clientSecretKey: gitlabClientSecret
         allowedGroups: [infra, sre]
       - id: keycloak
         type: oidc
@@ -90,18 +80,29 @@ ui:
         usernameClaim: preferred_username
         scopes: [openid, profile, email]
         allowedGroups: [sre, infra]
-      - id: google
-        type: google
-        displayName: "Google"
-        clientID: ggid
-        clientSecretEnv: GOOGLE_CLIENT_SECRET
-        clientSecretKey: googleClientSecret
-        hostedDomain: corp.com
 `
 
-func TestChartAuthOn(t *testing.T) {
+const authInlineValues = `
+ui:
+  auth:
+    enabled: true
+    redirectURL: https://portreach.corp/auth/callback
+    cookieKey: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    providers:
+      - id: github
+        type: github
+        clientID: ghid
+        clientSecret: gh-secret
+      - id: corp-gitlab
+        type: gitlab
+        baseURL: https://gitlab.corp
+        clientID: glid
+        clientSecret: gl-secret
+`
+
+func TestChartAuthExternalSecret(t *testing.T) {
 	requireHelm(t)
-	vals := writeValues(t, authOnValues)
+	vals := writeValues(t, authExternalValues)
 
 	dep := helmTemplate(t, "-f", vals, "--show-only", "templates/deployment-ui.yaml")
 	for _, want := range []string{
@@ -112,12 +113,10 @@ func TestChartAuthOn(t *testing.T) {
 		"key: cookieKey",
 		"name: GITHUB_CLIENT_SECRET",
 		"key: githubClientSecret",
-		"name: GITLAB_CLIENT_SECRET",
-		"key: gitlabClientSecret",
+		"name: PORTREACH_AUTH_CORP_GITLAB_CLIENT_SECRET",
+		"key: corp-gitlabClientSecret",
 		"name: OIDC_CLIENT_SECRET",
 		"key: oidcClientSecret",
-		"name: GOOGLE_CLIENT_SECRET",
-		"key: googleClientSecret",
 		"mountPath: /etc/portreach/auth",
 		"configMap:",
 	} {
@@ -130,9 +129,8 @@ func TestChartAuthOn(t *testing.T) {
 	for _, want := range []string{
 		"cookieKey: ${PORTREACH_AUTH_COOKIE_KEY}",
 		"clientSecret: ${GITHUB_CLIENT_SECRET}",
-		"clientSecret: ${GITLAB_CLIENT_SECRET}",
+		"clientSecret: ${PORTREACH_AUTH_CORP_GITLAB_CLIENT_SECRET}",
 		"clientSecret: ${OIDC_CLIENT_SECRET}",
-		"clientSecret: ${GOOGLE_CLIENT_SECRET}",
 		"id: github",
 		"id: corp-gitlab",
 		"displayName: Corporate GitLab",
@@ -141,8 +139,44 @@ func TestChartAuthOn(t *testing.T) {
 		"issuer: https://keycloak.corp/realms/main",
 		"groupsClaim: groups",
 		"usernameClaim: preferred_username",
-		"id: google",
-		"hostedDomain: corp.com",
+	} {
+		if !strings.Contains(cm, want) {
+			t.Errorf("configmap missing %q\n---\n%s", want, cm)
+		}
+	}
+
+	all := helmTemplate(t, "-f", vals)
+	if strings.Contains(all, "kind: Secret") && strings.Contains(all, "gh-secret") {
+		t.Errorf("external-secret mode should not render inline secret material\n%s", all)
+	}
+}
+
+func TestChartAuthInlineSecret(t *testing.T) {
+	requireHelm(t)
+	vals := writeValues(t, authInlineValues)
+
+	secret := helmTemplate(t, "-f", vals, "--show-only", "templates/secret-ui-auth.yaml")
+	for _, want := range []string{
+		"kind: Secret",
+		"name: rel-portreach-ui-auth",
+		"cookieKey: \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+		"githubClientSecret: \"gh-secret\"",
+		"corp-gitlabClientSecret: \"gl-secret\"",
+	} {
+		if !strings.Contains(secret, want) {
+			t.Errorf("inline Secret missing %q\n---\n%s", want, secret)
+		}
+	}
+
+	cm := helmTemplate(t, "-f", vals, "--show-only", "templates/configmap-ui-auth.yaml")
+	for _, unwanted := range []string{"gh-secret", "gl-secret"} {
+		if strings.Contains(cm, unwanted) {
+			t.Errorf("configmap leaked inline secret %q\n---\n%s", unwanted, cm)
+		}
+	}
+	for _, want := range []string{
+		"clientSecret: ${PORTREACH_AUTH_GITHUB_CLIENT_SECRET}",
+		"clientSecret: ${PORTREACH_AUTH_CORP_GITLAB_CLIENT_SECRET}",
 	} {
 		if !strings.Contains(cm, want) {
 			t.Errorf("configmap missing %q\n---\n%s", want, cm)
@@ -150,12 +184,9 @@ func TestChartAuthOn(t *testing.T) {
 	}
 }
 
-// TestChartConfigRoundTrips renders the auth ConfigMap and feeds the embedded
-// auth.yaml back through auth.LoadConfig + Validate to prove the chart emits a
-// config the binary actually accepts (with the ${ENV} secrets populated).
 func TestChartConfigRoundTrips(t *testing.T) {
 	requireHelm(t)
-	vals := writeValues(t, authOnValues)
+	vals := writeValues(t, authExternalValues)
 	cm := helmTemplate(t, "-f", vals, "--show-only", "templates/configmap-ui-auth.yaml")
 
 	var doc struct {
@@ -169,12 +200,10 @@ func TestChartConfigRoundTrips(t *testing.T) {
 		t.Fatalf("configmap has no auth.yaml key\n%s", cm)
 	}
 
-	// Populate the ${ENV} secret placeholders the config references.
-	t.Setenv("PORTREACH_AUTH_COOKIE_KEY", strings.Repeat("a", 64)) // 32 bytes hex
+	t.Setenv("PORTREACH_AUTH_COOKIE_KEY", strings.Repeat("a", 64))
 	t.Setenv("GITHUB_CLIENT_SECRET", "gh-secret")
-	t.Setenv("GITLAB_CLIENT_SECRET", "gl-secret")
+	t.Setenv("PORTREACH_AUTH_CORP_GITLAB_CLIENT_SECRET", "gl-secret")
 	t.Setenv("OIDC_CLIENT_SECRET", "oidc-secret")
-	t.Setenv("GOOGLE_CLIENT_SECRET", "google-secret")
 
 	f := filepath.Join(t.TempDir(), "auth.yaml")
 	if err := os.WriteFile(f, []byte(authYAML), 0o600); err != nil {
@@ -190,8 +219,8 @@ func TestChartConfigRoundTrips(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("rendered config failed Validate: %v", err)
 	}
-	if len(cfg.Providers) != 4 {
-		t.Fatalf("want 4 providers, got %d", len(cfg.Providers))
+	if len(cfg.Providers) != 3 {
+		t.Fatalf("want 3 providers, got %d", len(cfg.Providers))
 	}
 }
 
@@ -204,15 +233,15 @@ func TestChartAuthOff(t *testing.T) {
 		}
 	}
 
-	// The auth ConfigMap template must render to nothing when auth is off.
 	all := helmTemplate(t)
 	if strings.Contains(all, "kind: ConfigMap") && strings.Contains(all, "-ui-auth") {
 		t.Errorf("auth-off render unexpectedly includes the auth ConfigMap\n%s", all)
 	}
+	if strings.Contains(all, "kind: Secret") && strings.Contains(all, "-ui-auth") {
+		t.Errorf("auth-off render unexpectedly includes the auth Secret\n%s", all)
+	}
 }
 
-// chartAppVersion reads appVersion from Chart.yaml so the image assertions track
-// the chart instead of hard-coding a version.
 func chartAppVersion(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(chartDir, "Chart.yaml"))
@@ -231,7 +260,6 @@ func chartAppVersion(t *testing.T) string {
 	return doc.AppVersion
 }
 
-// imageRefs extracts every `image: "..."` value from a rendered manifest.
 func imageRefs(s string) []string {
 	var out []string
 	for _, line := range strings.Split(s, "\n") {
@@ -243,9 +271,6 @@ func imageRefs(s string) []string {
 	return out
 }
 
-// TestChartImage asserts image.tag is the single source of truth: empty defaults
-// to the plain appVersion (no -rootless suffix) and any explicit tag is used
-// verbatim, with the UI Deployment and agent DaemonSet always sharing one image.
 func TestChartImage(t *testing.T) {
 	requireHelm(t)
 	appVersion := chartAppVersion(t)
@@ -255,7 +280,7 @@ func TestChartImage(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"default-appVersion-no-rootless", nil, "ghcr.io/lavr/portreach:" + appVersion},
+		{"default-appVersion", nil, "ghcr.io/lavr/portreach:" + appVersion},
 		{"rootless-opt-in-verbatim", []string{"--set", "image.tag=" + appVersion + "-rootless"}, "ghcr.io/lavr/portreach:" + appVersion + "-rootless"},
 		{"sha-tag-verbatim", []string{"--set", "image.tag=sha-abc123"}, "ghcr.io/lavr/portreach:sha-abc123"},
 		{"custom-repository", []string{"--set", "image.repository=ghcr.io/me/portreach"}, "ghcr.io/me/portreach:" + appVersion},
@@ -278,9 +303,6 @@ func TestChartImage(t *testing.T) {
 	}
 }
 
-// agentsDNS extracts the PORTREACH_AGENTS_DNS env value from a rendered UI
-// Deployment. The env block renders the name on one line and its value on the
-// next, so we scan for the name line and read the following value line.
 func agentsDNS(t *testing.T, s string) string {
 	t.Helper()
 	lines := strings.Split(s, "\n")
@@ -295,10 +317,6 @@ func agentsDNS(t *testing.T, s string) string {
 	return ""
 }
 
-// TestChartDiscoveryDNS asserts the agent-discovery name priority chain:
-// ui.agentsDnsName override wins verbatim; otherwise ui.discovery.mode picks
-// between relative (default), fqdn (uses clusterDomain) and bare. The namespace
-// is substituted from --namespace, and relative is independent of clusterDomain.
 func TestChartDiscoveryDNS(t *testing.T) {
 	requireHelm(t)
 	const svc = "rel-portreach-agent"
@@ -310,10 +328,9 @@ func TestChartDiscoveryDNS(t *testing.T) {
 	}{
 		{"default-relative", []string{"--namespace", "demo"}, svc + ".demo.svc"},
 		{"relative-ignores-clusterDomain", []string{"--namespace", "demo", "--set", "clusterDomain=example.com"}, svc + ".demo.svc"},
-		{"fqdn-uses-clusterDomain", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn", "--set", "clusterDomain=example.com"}, svc + ".demo.svc.example.com"},
-		{"fqdn-default-cluster-local", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn"}, svc + ".demo.svc.cluster.local"},
-		{"bare", []string{"--namespace", "demo", "--set", "ui.discovery.mode=bare"}, svc},
-		{"override-wins", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn", "--set", "ui.agentsDnsName=foo.bar"}, "foo.bar"},
+		{"fqdn-uses-clusterDomain", []string{"--namespace", "demo", "--set", "ui.agentDiscovery.mode=fqdn", "--set", "clusterDomain=example.com"}, svc + ".demo.svc.example.com"},
+		{"bare", []string{"--namespace", "demo", "--set", "ui.agentDiscovery.mode=bare"}, svc},
+		{"override-wins", []string{"--namespace", "demo", "--set", "ui.agentDiscovery.mode=fqdn", "--set", "ui.agentDiscovery.dnsName=foo.bar"}, "foo.bar"},
 		{"namespace-substitution", []string{"--namespace", "other-ns"}, svc + ".other-ns.svc"},
 	}
 	for _, tc := range cases {
@@ -326,33 +343,102 @@ func TestChartDiscoveryDNS(t *testing.T) {
 	}
 }
 
-// TestChartDiscoveryModeValidation asserts an unknown/typo'd discovery mode
-// fails the render loudly instead of silently falling back to relative, and that
-// a null ui.discovery block falls back to the relative default rather than
-// panicking on a nil-pointer deref.
-func TestChartDiscoveryModeValidation(t *testing.T) {
+func TestChartValidationFailures(t *testing.T) {
 	requireHelm(t)
-	const svc = "rel-portreach-agent"
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "unknown discovery mode",
+			args: []string{"--namespace", "demo", "--set", "ui.agentDiscovery.mode=Fqdn"},
+			want: "/ui/agentDiscovery/mode",
+		},
+		{
+			name: "ingress without hosts",
+			args: []string{"--set", "ui.ingress.enabled=true"},
+			want: "ui/ingress/hosts",
+		},
+		{
+			name: "inline provider secret without cookie key",
+			args: []string{
+				"--set", "ui.auth.enabled=true",
+				"--set", "ui.auth.redirectURL=https://portreach.corp/auth/callback",
+				"--set", "ui.auth.providers[0].id=github",
+				"--set", "ui.auth.providers[0].type=github",
+				"--set", "ui.auth.providers[0].clientID=ghid",
+				"--set", "ui.auth.providers[0].clientSecret=gh-secret",
+			},
+			want: "ui.auth.cookieKey is required",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplateErr(t, tc.args...)
+			if err == nil {
+				t.Fatalf("expected render failure, got success:\n%s", out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("render error missing %q\n---\n%s", tc.want, out)
+			}
+		})
+	}
+}
 
-	// Wrong case is a typo, not one of relative|fqdn|bare: must fail the render.
-	if out, err := helmTemplateErr(t, "--namespace", "demo", "--set", "ui.discovery.mode=Fqdn"); err == nil {
-		t.Errorf("unknown discovery mode should fail render, got success:\n%s", out)
+func TestChartHostNetworkCanBeDisabled(t *testing.T) {
+	requireHelm(t)
+	out := helmTemplate(t,
+		"--set", "agent.network.hostNetwork=false",
+		"--set", "agent.network.hostPort.enabled=false",
+		"--show-only", "templates/daemonset-agent.yaml",
+	)
+	for _, unwanted := range []string{"hostNetwork: true", "dnsPolicy: ClusterFirstWithHostNet", "hostPort:"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("daemonset unexpectedly contains %q\n---\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestChartExtraExtensions(t *testing.T) {
+	requireHelm(t)
+	vals := writeValues(t, `
+extraSecrets:
+  - name: custom-secret
+    stringData:
+      release: "{{ .Release.Name }}"
+      password: "s3cr3t"
+extraManifests:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: "{{ include \"portreach.fullname\" . }}-extra"
+    data:
+      release: "{{ .Release.Name }}"
+`)
+
+	secret := helmTemplate(t, "-f", vals, "--show-only", "templates/extra-secrets.yaml")
+	for _, want := range []string{"name: custom-secret", "release: 'rel'", "password: s3cr3t"} {
+		if !strings.Contains(secret, want) {
+			t.Errorf("extra secret missing %q\n---\n%s", want, secret)
+		}
 	}
 
-	// ui.discovery: null must fall back to the relative default, not panic.
-	vals := writeValues(t, "ui:\n  discovery: null\n")
-	out := helmTemplate(t, "-f", vals, "--namespace", "demo", "--show-only", "templates/deployment-ui.yaml")
-	if got := agentsDNS(t, out); got != svc+".demo.svc" {
-		t.Errorf("null discovery: PORTREACH_AGENTS_DNS = %q, want %q", got, svc+".demo.svc")
+	extra := helmTemplate(t, "-f", vals, "--show-only", "templates/extra-manifests.yaml")
+	for _, want := range []string{"kind: ConfigMap", "name: 'rel-portreach-extra'", "release: 'rel'"} {
+		if !strings.Contains(extra, want) {
+			t.Errorf("extra manifest missing %q\n---\n%s", want, extra)
+		}
 	}
 }
 
 func TestChartLint(t *testing.T) {
 	requireHelm(t)
-	vals := writeValues(t, authOnValues)
+	external := writeValues(t, authExternalValues)
+	inline := writeValues(t, authInlineValues)
 	for _, args := range [][]string{
 		{"lint", chartDir},
-		{"lint", chartDir, "-f", vals},
+		{"lint", chartDir, "-f", external},
+		{"lint", chartDir, "-f", inline},
 	} {
 		out, err := exec.Command("helm", args...).CombinedOutput()
 		if err != nil {

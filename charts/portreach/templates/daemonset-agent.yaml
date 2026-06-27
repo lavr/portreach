@@ -1,11 +1,17 @@
+{{- if .Values.agent.enabled }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "portreach.agent.fullname" . }}
   labels:
-    {{- include "portreach.labels" . | nindent 4 }}
-    app.kubernetes.io/component: agent
+    {{- include "portreach.agent.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
+  updateStrategy:
+    {{- toYaml .Values.agent.updateStrategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "portreach.agent.selectorLabels" . | nindent 6 }}
@@ -16,24 +22,31 @@ spec:
         {{- with .Values.agent.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.agent.podAnnotations }}
+      {{- $podAnnotations := merge (.Values.agent.podAnnotations | default dict) (.Values.commonAnnotations | default dict) }}
+      {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      serviceAccountName: {{ include "portreach.agent.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccounts.agent.automountServiceAccountToken }}
+      {{- if .Values.agent.network.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: {{ .Values.agent.network.dnsPolicy }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "portreach.serviceAccountName" . }}
-      {{- if .Values.agent.hostNetwork }}
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .Values.agent.priorityClassName }}
+      priorityClassName: {{ . | quote }}
       {{- end }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        runAsGroup: 65534
+        {{- toYaml .Values.agent.podSecurityContext | nindent 8 }}
+      {{- with .Values.agent.initContainers }}
+      initContainers:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
       containers:
         - name: agent
           image: {{ include "portreach.image" . | quote }}
@@ -42,18 +55,23 @@ spec:
             - agent
             - --listen
             - ":{{ .Values.agent.port }}"
-            {{- with .Values.agent.allow }}
+            {{- with .Values.agent.targetPolicy.allow }}
             - --allow
             - {{ . | quote }}
             {{- end }}
-            {{- with .Values.agent.deny }}
+            {{- with .Values.agent.targetPolicy.deny }}
             - --deny
             - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.agent.extraArgs }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.agent.port }}
-              hostPort: {{ .Values.agent.port }}
+              {{- if .Values.agent.network.hostPort.enabled }}
+              hostPort: {{ .Values.agent.network.hostPort.port | default .Values.agent.port }}
+              {{- end }}
               protocol: TCP
           env:
             - name: NODE_NAME
@@ -61,25 +79,39 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             {{- with .Values.agent.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
             {{- end }}
+          {{- with .Values.agent.envFrom }}
+          envFrom:
+            {{- tpl (toYaml .) $ | nindent 12 }}
+          {{- end }}
+          {{- with include "portreach.probe" .Values.agent.probes.startup }}
+          startupProbe:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with include "portreach.probe" .Values.agent.probes.liveness }}
           livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with include "portreach.probe" .Values.agent.probes.readiness }}
           readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 2
-            periodSeconds: 5
+            {{- . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
           securityContext:
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
+            {{- toYaml .Values.agent.containerSecurityContext | nindent 12 }}
+          {{- with .Values.agent.extraVolumeMounts }}
+          volumeMounts:
+            {{- tpl (toYaml .) $ | nindent 12 }}
+          {{- end }}
+        {{- with .Values.agent.sidecars }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
+      {{- with .Values.agent.extraVolumes }}
+      volumes:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
       {{- with .Values.agent.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -92,3 +124,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

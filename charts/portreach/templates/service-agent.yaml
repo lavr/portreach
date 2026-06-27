@@ -1,17 +1,26 @@
+{{- if and .Values.agent.enabled .Values.agent.service.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "portreach.agent.fullname" . }}
   labels:
-    {{- include "portreach.labels" . | nindent 4 }}
-    app.kubernetes.io/component: agent
+    {{- include "portreach.agent.labels" . | nindent 4 }}
+    {{- with .Values.agent.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- $annotations := merge (.Values.agent.service.annotations | default dict) (.Values.commonAnnotations | default dict) }}
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   clusterIP: None
-  publishNotReadyAddresses: true
+  publishNotReadyAddresses: {{ .Values.agent.service.publishNotReadyAddresses }}
   ports:
-    - port: {{ .Values.agent.port }}
+    - name: http
+      port: {{ .Values.agent.port }}
       targetPort: http
       protocol: TCP
-      name: http
   selector:
     {{- include "portreach.agent.selectorLabels" . | nindent 4 }}
+{{- end }}

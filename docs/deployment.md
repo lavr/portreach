@@ -20,13 +20,14 @@ kubectl port-forward svc/portreach-ui 8080:80
 The chart deploys:
 
 - an **agent DaemonSet** with `hostNetwork: true` (so each probe egresses from
-  the real node IP), `hostPort` 8732, `NODE_NAME` via the downward API, and
-  `tolerations: [{operator: Exists}]` so an agent lands on every node including
-  tainted control-plane nodes;
+  the real node IP), optional `hostPort` 8732, `NODE_NAME` via the downward API,
+  and `tolerations: [{operator: Exists}]` so an agent lands on every node
+  including tainted nodes;
 - a **headless Service** (`clusterIP: None`) the UI uses for DNS discovery;
 - the **UI Deployment + Service**, wired to the headless service via
   `PORTREACH_AGENTS_DNS` and `PORTREACH_AGENT_PORT`;
-- an optional **Ingress** (`ui.ingress.enabled`).
+- optional **Ingress**, SSO auth, NetworkPolicies, extra Secrets and extra
+  manifests.
 
 Key `values.yaml` knobs:
 
@@ -37,10 +38,10 @@ image:
                      # e.g. "0.1.0-rootless" for the scratch image (opt-in)
 
 ui:
-  replicaCount: 1
+  replicas: 2
   timeout: 8s
-  agentsDnsName: ""  # raw override; empty => built from discovery.mode
-  discovery:
+  agentDiscovery:
+    dnsName: ""      # raw override; empty => built from mode
     mode: relative   # relative | fqdn | bare (see "Agent discovery" below)
   ingress:
     enabled: false   # enable + set hosts to expose externally
@@ -48,10 +49,14 @@ ui:
 # clusterDomain: cluster.local   # used ONLY in discovery.mode: fqdn
 
 agent:
-  hostNetwork: true
   port: 8732
-  allow: ""          # SSRF policy CIDRs (see configuration.md)
-  deny: ""
+  targetPolicy:
+    allow: ""        # SSRF policy CIDRs (see configuration.md)
+    deny: ""
+  network:
+    hostNetwork: true
+    hostPort:
+      enabled: true
   tolerations:
     - operator: Exists
 ```
@@ -72,66 +77,53 @@ The UI resolves the headless agent Service by DNS, via the name the chart puts i
 `PORTREACH_AGENTS_DNS`. The chart builds that name portably so it works on any
 cluster DNS domain — **not just `cluster.local`**:
 
-- `ui.discovery.mode: relative` (**default**) → `<svc>.<ns>.svc`. A 2-dot name is
-  below the pod's `ndots:5`, so the Go resolver appends the cluster search domains
-  and matches under whatever DNS domain the cluster actually uses.
-- `ui.discovery.mode: fqdn` → `<svc>.<ns>.svc.<clusterDomain>`. Pins the domain;
-  set `clusterDomain` to match (the historical behaviour).
-- `ui.discovery.mode: bare` → `<svc>` (same-namespace only).
-- `ui.agentsDnsName: <name>` → used verbatim, overriding the modes above
+- `ui.agentDiscovery.mode: relative` (**default**) → `<svc>.<ns>.svc`. A 2-dot
+  name is below the pod's `ndots:5`, so the Go resolver appends the cluster
+  search domains and matches under whatever DNS domain the cluster actually uses.
+- `ui.agentDiscovery.mode: fqdn` → `<svc>.<ns>.svc.<clusterDomain>`. Pins the
+  domain; set `clusterDomain` to match.
+- `ui.agentDiscovery.mode: bare` → `<svc>` (same-namespace only).
+- `ui.agentDiscovery.dnsName: <name>` → used verbatim, overriding the modes above
   (cross-namespace or external names).
 
 > **Non-`cluster.local` caveat:** an absolute `…svc.cluster.local` resolves to
 > NXDOMAIN on clusters whose domain differs (e.g. `kubeprodone.example.ru`),
 > leaving the UI with zero agents (`/api/check` → 502). The default `relative`
-> mode avoids pinning the domain, so the chart is portable out of the box; reach
+> mode avoids pinning the domain, so the chart is portable out of the box; use
 > for `fqdn` + `clusterDomain` only when you need an absolute name.
 
 ### Authentication (optional SSO)
 
-The chart can put the UI behind SSO via `ui.auth` — disabled by default. When
-enabled it renders the auth config into a ConfigMap, mounts it at
-`/etc/portreach/auth/auth.yaml`, passes `--auth-config`, and injects the cookie
-key + each provider's client secret from a Kubernetes Secret as env vars (the
-config references them as `${ENV}`, so secrets never land in the ConfigMap).
+The chart can put the UI behind SSO via `ui.auth` — disabled by default. It
+renders auth config into a ConfigMap, mounts it at
+`/etc/portreach/auth/auth.yaml`, passes `--auth-config`, and injects secrets via
+env vars. The ConfigMap contains only `${ENV}` placeholders.
 
-Create the Secret out-of-band (cookie key + one client secret per provider):
-
-```sh
-kubectl create secret generic portreach-ui-auth \
-  --from-literal=cookieKey="$(openssl rand -hex 32)" \
-  --from-literal=githubClientSecret=... \
-  --from-literal=gitlabClientSecret=...
-```
-
-Then enable two providers in `values.yaml`:
+Inline mode creates `<ui>-auth` from values:
 
 ```yaml
 ui:
   auth:
     enabled: true
     redirectURL: https://portreach.corp/auth/callback
-    allowedUsers: []                 # empty = any authenticated user
-    existingSecret: portreach-ui-auth   # defaults to <ui-fullname>-auth
-    cookieKeyEnv: PORTREACH_AUTH_COOKIE_KEY
-    cookieKeySecretKey: cookieKey
+    cookieKey: "<32-byte hex/base64>"
     providers:
       - id: github
         type: github
-        displayName: GitHub
         clientID: "abc"
-        clientSecretEnv: GITHUB_CLIENT_SECRET
-        clientSecretKey: githubClientSecret   # key within existingSecret
+        clientSecret: "github-secret"
         allowedOrgs: [myorg]
       - id: corp-gitlab
         type: gitlab
-        displayName: "Corporate GitLab"
         baseURL: https://gitlab.corp
         clientID: "def"
-        clientSecretEnv: GITLAB_CLIENT_SECRET
-        clientSecretKey: gitlabClientSecret
+        clientSecret: "gitlab-secret"
         allowedGroups: [infra, sre]
 ```
+
+For external secret management, set `ui.auth.existingSecret` and omit inline
+`cookieKey` / `clientSecret`. Provider secret env/key names are derived from the
+provider `id` unless `clientSecretEnv` / `clientSecretKey` are set explicitly.
 
 `/healthz` stays public so the liveness/readiness probes keep working. Terminate
 TLS at the ingress so the `Secure` session cookie is sent. See the auth-config
