@@ -151,7 +151,8 @@ file:
 
 ```yaml
 auth:
-  # OAuth callback URL — must match each provider's registered callback.
+  # OAuth callback URL — must match each provider's registered callback. Leave
+  # empty for host-derived mode (one deploy, many hostnames — see below).
   redirectURL: https://portreach.corp/auth/callback
   # AES-256 session-cookie key: 32 bytes, hex or base64. Never hardcode it —
   # reference an env var so it stays out of the file (see ${ENV} below).
@@ -331,6 +332,41 @@ providers:
 The callback is the single `redirectURL` for all providers; the active provider
 is recovered from the sealed state cookie, so you do not register a per-provider
 callback path.
+
+### Host-derived callback (one deploy, many hostnames)
+
+By default `redirectURL` is a single fixed value, so one deployment can only
+authenticate on one hostname. **Leave `redirectURL` empty** to switch to
+*host-derived mode*: the `redirect_uri` is computed **per request** from the
+incoming host — `https://<X-Forwarded-Host>/auth/callback` (scheme from
+`X-Forwarded-Proto`, falling back to the request `Host` and the connection's TLS
+state). One deployment then works across every ingress hostname you point at it
+(e.g. a per-cluster `portreach.cluster-one.k8s` **and** a shared
+`portreach.shared.k8s`) with no per-cluster auth config.
+
+```yaml
+auth:
+  redirectURL: ""                 # empty → host-derived
+  # Optional: restrict the derived host to a known set (defence-in-depth).
+  allowedRedirectHosts: [portreach.cluster-one.k8s, portreach.shared.k8s]
+  # Optional: override the trusted forwarded-header names (defaults shown).
+  forwardedHostHeader: X-Forwarded-Host
+  forwardedProtoHeader: X-Forwarded-Proto
+```
+
+How it stays safe:
+
+- **The IdP only honours registered callbacks.** Register *every* per-host
+  `https://<host>/auth/callback` in the OAuth app; a spoofed/unknown host is
+  rejected by the IdP, never redirected to.
+- **The derived callback is pinned in the sealed state cookie** at login and
+  replayed at callback, so it is identical on both legs (OAuth requires the two
+  `redirect_uri`s to match) and cannot be swapped mid-flow.
+- **Trust the forwarded headers only.** The host/scheme are read **only** from
+  the configured forwarded headers, which your ingress/reverse-proxy must set
+  (and must strip from client input). If portreach is exposed **directly**
+  (no proxy), set a fixed `redirectURL` or an `allowedRedirectHosts` allowlist —
+  do not run host-derived mode open to the internet without one.
 
 ### Audit logging (for security / ИБ)
 

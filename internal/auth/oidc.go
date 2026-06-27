@@ -104,10 +104,15 @@ func (p *oidcProvider) Type() string        { return p.typ }
 // domain is configured (Google `hd`), it is sent as an auth param so Google
 // pre-selects accounts from that Workspace; the claim is still verified on
 // callback since the param alone is not a security guarantee.
-func (p *oidcProvider) AuthCodeURL(state, nonce string) string {
+func (p *oidcProvider) AuthCodeURL(state, nonce, redirectURL string) string {
 	opts := []oauth2.AuthCodeOption{oidc.Nonce(nonce)}
 	if p.hostedDomain != "" {
 		opts = append(opts, oauth2.SetAuthURLParam("hd", p.hostedDomain))
+	}
+	// In host-derived callback mode the caller supplies a per-request
+	// redirect_uri; overriding it here keeps the shared oauth2.Config immutable.
+	if redirectURL != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("redirect_uri", redirectURL))
 	}
 	return p.oauth.AuthCodeURL(state, opts...)
 }
@@ -115,8 +120,14 @@ func (p *oidcProvider) AuthCodeURL(state, nonce string) string {
 // Exchange swaps the authorization code for a token, verifies the id_token
 // (signature, audience, expiry) and its nonce, then maps the OIDC claims into an
 // Identity using the configured username and groups claims.
-func (p *oidcProvider) Exchange(ctx context.Context, code, nonce string) (Identity, error) {
-	tok, err := p.oauth.Exchange(ctx, code)
+func (p *oidcProvider) Exchange(ctx context.Context, code, nonce, redirectURL string) (Identity, error) {
+	var opts []oauth2.AuthCodeOption
+	// The redirect_uri sent to the token endpoint must match the one used at
+	// authorization; pass the same per-request override (empty = configured default).
+	if redirectURL != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("redirect_uri", redirectURL))
+	}
+	tok, err := p.oauth.Exchange(ctx, code, opts...)
 	if err != nil {
 		return Identity{}, fmt.Errorf("auth: oidc token exchange: %w", err)
 	}

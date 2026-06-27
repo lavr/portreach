@@ -92,6 +92,12 @@
               "type": "array",
               "items": { "type": "string" }
             },
+            "allowedRedirectHosts": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "forwardedHostHeader": { "type": "string" },
+            "forwardedProtoHeader": { "type": "string" },
             "existingSecret": { "type": "string" },
             "cookieKey": { "type": "string" },
             "cookieKeyEnv": { "type": "string", "minLength": 1 },
@@ -106,7 +112,6 @@
           },
           "then": {
             "properties": {
-              "redirectURL": { "minLength": 1 },
               "providers": { "minItems": 1 }
             }
           }

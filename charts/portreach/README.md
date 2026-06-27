@@ -59,9 +59,36 @@ agent:
 
 ## Auth
 
-SSO is disabled by default. Enabling it requires `redirectURL` and at least one
-provider. The ConfigMap always contains `${ENV}` placeholders; client secrets
-and the cookie key are injected from a Secret.
+SSO is disabled by default. Enabling it requires at least one provider. The
+ConfigMap always contains `${ENV}` placeholders; client secrets and the cookie
+key are injected from a Secret.
+
+`redirectURL` is optional. Set it to pin a single fixed OAuth callback (one
+hostname). **Leave it empty for host-derived mode**: the `redirect_uri` is
+derived per request from `X-Forwarded-Host`/`X-Forwarded-Proto`, so one release
+authenticates across every ingress hostname (register each callback in the IdP).
+Optionally restrict the derived host with `allowedRedirectHosts` and override the
+trusted header names with `forwardedHostHeader`/`forwardedProtoHeader`:
+
+```yaml
+ui:
+  auth:
+    enabled: true
+    redirectURL: ""                 # empty → host-derived (many hostnames)
+    allowedRedirectHosts: [portreach.cluster-one.k8s, portreach.shared.k8s]
+    existingSecret: portreach-ui-auth
+    providers:
+      - id: github
+        type: github
+        clientID: "abc"
+  ingress:
+    enabled: true
+    hosts:
+      - host: portreach.cluster-one.k8s
+      - host: portreach.shared.k8s
+```
+
+See `docs/configuration.md` (Host-derived callback) for the trust model.
 
 Inline mode, where the chart creates `<ui>-auth`:
 

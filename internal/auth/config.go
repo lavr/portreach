@@ -37,6 +37,15 @@ const (
 // cookieKeyLen is the required AES-256 key length in bytes.
 const cookieKeyLen = 32
 
+// Default forwarded-header names used to derive the OAuth callback in
+// host-derived mode (auth.redirectURL empty). They are configurable so
+// non-standard proxies (e.g. a cluster-specific header) work without code
+// changes.
+const (
+	defaultForwardedHostHeader  = "X-Forwarded-Host"
+	defaultForwardedProtoHeader = "X-Forwarded-Proto"
+)
+
 // Default base URL and display name for github, the one non-OIDC provider.
 // OIDC presets (including gitlab) own their issuer/display-name defaults in the
 // preset table (see presets.go), so they are deliberately absent here.
@@ -76,10 +85,24 @@ type ProviderConfig struct {
 // Config is the top-level auth configuration. CookieKey is the decoded 32-byte
 // AES-256 key; the YAML carries it as a hex/base64 string in CookieKeyRaw.
 type Config struct {
+	// RedirectURL is the OAuth callback URL. When set it is used verbatim for
+	// every request (fixed mode, one hostname). When empty the callback is
+	// derived per request from the incoming host (host-derived mode), letting
+	// one deployment authenticate across many ingress hostnames.
 	RedirectURL  string           `yaml:"redirectURL"`
 	CookieKeyRaw string           `yaml:"cookieKey"`
 	AllowedUsers []string         `yaml:"allowedUsers"`
 	Providers    []ProviderConfig `yaml:"providers"`
+
+	// Host-derived callback mode (only consulted when RedirectURL is empty).
+	// ForwardedHostHeader / ForwardedProtoHeader name the request headers the
+	// trusted proxy sets (default X-Forwarded-Host / X-Forwarded-Proto).
+	// AllowedRedirectHosts, when non-empty, restricts the derived host to a
+	// known set as defence-in-depth (empty = rely on the IdP's registered-callback
+	// enforcement).
+	ForwardedHostHeader  string   `yaml:"forwardedHostHeader"`
+	ForwardedProtoHeader string   `yaml:"forwardedProtoHeader"`
+	AllowedRedirectHosts []string `yaml:"allowedRedirectHosts"`
 
 	// CookieKey is the decoded key, populated by LoadConfig.
 	CookieKey []byte `yaml:"-"`
@@ -118,8 +141,13 @@ func LoadConfig(path string) (*Config, error) {
 
 	cfg.RedirectURL = expandEnv(cfg.RedirectURL)
 	cfg.CookieKeyRaw = expandEnv(cfg.CookieKeyRaw)
+	cfg.ForwardedHostHeader = expandEnv(cfg.ForwardedHostHeader)
+	cfg.ForwardedProtoHeader = expandEnv(cfg.ForwardedProtoHeader)
 	for i := range cfg.AllowedUsers {
 		cfg.AllowedUsers[i] = expandEnv(cfg.AllowedUsers[i])
+	}
+	for i := range cfg.AllowedRedirectHosts {
+		cfg.AllowedRedirectHosts[i] = expandEnv(cfg.AllowedRedirectHosts[i])
 	}
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
@@ -208,9 +236,9 @@ func (c *Config) Validate() error {
 	if !c.Enabled() {
 		return nil
 	}
-	if c.RedirectURL == "" {
-		return fmt.Errorf("auth: redirectURL is required")
-	}
+	// RedirectURL is optional: empty selects host-derived callback mode, where
+	// the redirect_uri is computed per request from the incoming host (see
+	// Config.RedirectURL). A non-empty value pins one fixed callback.
 	if len(c.CookieKey) != cookieKeyLen {
 		return fmt.Errorf("auth: cookieKey must decode to %d bytes", cookieKeyLen)
 	}

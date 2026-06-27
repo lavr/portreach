@@ -56,8 +56,20 @@ ui:
 
   auth:
     enabled: false
+    # OAuth callback URL. Empty = host-derived mode: the redirect_uri is built
+    # per request from the incoming host, so one deployment authenticates across
+    # every ingress hostname (register each callback in the IdP app). Set a value
+    # to pin a single fixed callback (one hostname).
     redirectURL: ""
     allowedUsers: []
+    # Host-derived mode only (redirectURL empty). allowedRedirectHosts, when
+    # non-empty, restricts the derived host to a known set (defence-in-depth on
+    # top of the IdP's registered-callback check). forwardedHostHeader /
+    # forwardedProtoHeader override the request headers the trusted proxy sets
+    # (empty = X-Forwarded-Host / X-Forwarded-Proto defaults).
+    allowedRedirectHosts: []
+    forwardedHostHeader: ""
+    forwardedProtoHeader: ""
     existingSecret: ""
     cookieKey: ""
     cookieKeyEnv: PORTREACH_AUTH_COOKIE_KEY

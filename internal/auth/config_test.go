@@ -195,11 +195,12 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("missing-redirectURL", func(t *testing.T) {
+	t.Run("empty-redirectURL-valid", func(t *testing.T) {
+		// An empty redirectURL is the host-derived callback mode, not an error.
 		c := base()
 		c.RedirectURL = ""
-		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "redirectURL") {
-			t.Fatalf("want redirectURL error, got %v", err)
+		if err := c.Validate(); err != nil {
+			t.Fatalf("empty redirectURL (host-derived mode) should validate: %v", err)
 		}
 	})
 
