@@ -1,0 +1,32 @@
+{
+  "app.title": "portreach",
+  "app.heading": "portreach — доступность с каждого узла",
+
+  "form.host": "хост",
+  "form.port": "порт",
+  "form.proto": "протокол",
+  "form.timeout": "таймаут",
+  "form.check": "проверить",
+
+  "table.node": "узел",
+  "table.src_ip": "src_ip",
+  "table.dns": "DNS",
+  "table.tcp": "TCP",
+  "table.latency": "задержка",
+  "table.error": "ошибка",
+  "result.open": "открыт",
+  "result.closed": "закрыт",
+  "result.summary": "%s/%s агентов достигли %s:%s/%s",
+
+  "error.host_required": "требуется хост",
+  "error.bad_port": "неверный порт",
+  "error.bad_timeout": "неверный таймаут",
+
+  "auth.login.title": "Вход",
+  "auth.login.heading": "Вход в portreach",
+  "auth.login.button": "Войти через %s",
+  "auth.logout": "Выйти",
+  "auth.denied.title": "Доступ запрещён",
+  "auth.denied.heading": "Доступ запрещён",
+  "auth.denied.message": "Вашей учётной записи запрещён доступ к этому сервису."
+}

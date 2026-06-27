@@ -1,0 +1,39 @@
+{{- if .Values.ui.auth.enabled -}}
+{{- if not .Values.ui.auth.providers -}}
+{{- fail "ui.auth.enabled is true but ui.auth.providers is empty: a provider-less config leaves the UI unauthenticated. Configure at least one provider, or set ui.auth.enabled=false." -}}
+{{- end -}}
+{{- $a := .Values.ui.auth -}}
+{{- $auth := dict
+      "redirectURL" $a.redirectURL
+      "cookieKey" (printf "${%s}" $a.cookieKeyEnv)
+      "allowedUsers" ($a.allowedUsers | default list) -}}
+{{- $providers := list -}}
+{{- range $a.providers -}}
+  {{- $p := dict
+        "id" .id
+        "type" .type
+        "clientID" .clientID
+        "clientSecret" (printf "${%s}" .clientSecretEnv) -}}
+  {{- with .displayName }}{{- $_ := set $p "displayName" . -}}{{- end -}}
+  {{- with .baseURL }}{{- $_ := set $p "baseURL" . -}}{{- end -}}
+  {{- with .allowedOrgs }}{{- $_ := set $p "allowedOrgs" . -}}{{- end -}}
+  {{- with .allowedGroups }}{{- $_ := set $p "allowedGroups" . -}}{{- end -}}
+  {{- with .issuer }}{{- $_ := set $p "issuer" . -}}{{- end -}}
+  {{- with .scopes }}{{- $_ := set $p "scopes" . -}}{{- end -}}
+  {{- with .usernameClaim }}{{- $_ := set $p "usernameClaim" . -}}{{- end -}}
+  {{- with .groupsClaim }}{{- $_ := set $p "groupsClaim" . -}}{{- end -}}
+  {{- with .hostedDomain }}{{- $_ := set $p "hostedDomain" . -}}{{- end -}}
+  {{- $providers = append $providers $p -}}
+{{- end -}}
+{{- $_ := set $auth "providers" $providers -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "portreach.ui.fullname" . }}-auth
+  labels:
+    {{- include "portreach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+data:
+  auth.yaml: |
+    {{- dict "auth" $auth | toYaml | nindent 4 }}
+{{- end }}

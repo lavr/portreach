@@ -42,6 +42,10 @@ spec:
             - ":{{ .Values.ui.port }}"
             - --timeout
             - {{ .Values.ui.timeout | quote }}
+            {{- if .Values.ui.auth.enabled }}
+            - --auth-config
+            - /etc/portreach/auth/auth.yaml
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.ui.port }}
@@ -51,6 +55,21 @@ spec:
               value: {{ include "portreach.agent.dnsName" . | quote }}
             - name: PORTREACH_AGENT_PORT
               value: {{ .Values.agent.port | quote }}
+            {{- if .Values.ui.auth.enabled }}
+            {{- $secretName := .Values.ui.auth.existingSecret | default (printf "%s-auth" (include "portreach.ui.fullname" .)) }}
+            - name: {{ .Values.ui.auth.cookieKeyEnv }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.ui.auth.cookieKeySecretKey }}
+            {{- range .Values.ui.auth.providers }}
+            - name: {{ .clientSecretEnv }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .clientSecretKey }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.ui.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -71,6 +90,18 @@ spec:
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+          {{- if .Values.ui.auth.enabled }}
+          volumeMounts:
+            - name: auth-config
+              mountPath: /etc/portreach/auth
+              readOnly: true
+          {{- end }}
+      {{- if .Values.ui.auth.enabled }}
+      volumes:
+        - name: auth-config
+          configMap:
+            name: {{ include "portreach.ui.fullname" . }}-auth
+      {{- end }}
       {{- with .Values.ui.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
