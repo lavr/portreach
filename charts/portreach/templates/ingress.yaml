@@ -1,37 +1,41 @@
-{{- if .Values.ui.ingress.enabled -}}
+{{- if and .Values.ui.enabled .Values.ui.ingress.enabled -}}
+{{- if not .Values.ui.service.enabled -}}
+{{- fail "ui.ingress.enabled requires ui.service.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.ui.ingress.hosts -}}
+{{- fail "ui.ingress.enabled requires at least one ui.ingress.hosts entry" -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "portreach.ui.fullname" . }}
   labels:
-    {{- include "portreach.labels" . | nindent 4 }}
-    app.kubernetes.io/component: ui
-  {{- with .Values.ui.ingress.annotations }}
+    {{- include "portreach.ui.labels" . | nindent 4 }}
+  {{- $annotations := merge (.Values.ui.ingress.annotations | default dict) (.Values.commonAnnotations | default dict) }}
+  {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if .Values.ui.ingress.className }}
-  ingressClassName: {{ .Values.ui.ingress.className }}
+  {{- with .Values.ui.ingress.className }}
+  ingressClassName: {{ . | quote }}
   {{- end }}
-  {{- if .Values.ui.ingress.tls }}
+  {{- with .Values.ui.ingress.tls }}
   tls:
-    {{- range .Values.ui.ingress.tls }}
-    - hosts:
-        {{- range .hosts }}
-        - {{ . | quote }}
-        {{- end }}
-      secretName: {{ .secretName }}
-    {{- end }}
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
     {{- range .Values.ui.ingress.hosts }}
-    - host: {{ .host | quote }}
+    {{- $host := required "ui.ingress.hosts[].host is required" .host }}
+    {{- if not .paths }}
+    {{- fail (printf "ui.ingress.hosts[%s].paths must not be empty" $host) }}
+    {{- end }}
+    - host: {{ $host | quote }}
       http:
         paths:
           {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType }}
+          - path: {{ required (printf "ui.ingress.hosts[%s].paths[].path is required" $host) .path | quote }}
+            pathType: {{ default "Prefix" .pathType | quote }}
             backend:
               service:
                 name: {{ include "portreach.ui.fullname" $ }}
