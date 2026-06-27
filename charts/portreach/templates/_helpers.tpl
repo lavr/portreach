@@ -74,10 +74,28 @@ Agent resource name.
 {{- end }}
 
 {{/*
-Headless agent service FQDN, used by the UI for DNS discovery.
+Headless agent service DNS name, used by the UI for agent discovery.
+Priority chain (portable by default):
+  1. ui.agentsDnsName  — raw override, used verbatim (escape hatch).
+  2. ui.discovery.mode — how the default name is built (default "relative"):
+       relative -> <svc>.<ns>.svc            (resolved via pod search domain)
+       fqdn     -> <svc>.<ns>.svc.<domain>   (uses clusterDomain)
+       bare     -> <svc>                      (in-namespace only)
 */}}
 {{- define "portreach.agent.dnsName" -}}
-{{- printf "%s.%s.svc.%s" (include "portreach.agent.fullname" .) .Release.Namespace .Values.clusterDomain }}
+{{- $svc := include "portreach.agent.fullname" . -}}
+{{- with .Values.ui.agentsDnsName -}}
+{{- . -}}
+{{- else -}}
+{{- $mode := .Values.ui.discovery.mode | default "relative" -}}
+{{- if eq $mode "fqdn" -}}
+{{- printf "%s.%s.svc.%s" $svc .Release.Namespace .Values.clusterDomain -}}
+{{- else if eq $mode "bare" -}}
+{{- $svc -}}
+{{- else -}}
+{{- printf "%s.%s.svc" $svc .Release.Namespace -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*

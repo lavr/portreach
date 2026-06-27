@@ -91,7 +91,7 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
 ## Implementation Steps
 
 ### Task 1: Flexible discovery DNS helper + values
-- [ ] `_helpers.tpl`: replace `portreach.agent.dnsName` with the priority chain
+- [x] `_helpers.tpl`: replace `portreach.agent.dnsName` with the priority chain
       (`ui.agentsDnsName` → `ui.discovery.mode` `fqdn`/`bare`/`relative`):
       ```gotemplate
       {{- define "portreach.agent.dnsName" -}}
@@ -110,12 +110,12 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
       {{- end -}}
       {{- end }}
       ```
-- [ ] `values.yaml`: add `ui.agentsDnsName: ""`, `ui.discovery.mode: relative`
+- [x] `values.yaml`: add `ui.agentsDnsName: ""`, `ui.discovery.mode: relative`
       (comments documenting the three modes); keep `clusterDomain` but note it
       applies only in `fqdn` mode
-- [ ] verify with `helm template` the four discovery cases render the expected
+- [x] verify with `helm template` the four discovery cases render the expected
       `PORTREACH_AGENTS_DNS`; `helm lint` clean
-- [ ] run `go build ./... && go test ./...` (regression guard)
+- [x] run `go build ./... && go test ./...` (regression guard)
 
 ### Task 2: Single-variable image tag helper + values
 - [ ] `_helpers.tpl`: drop the suffix magic in `portreach.image` — default to
