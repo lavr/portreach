@@ -19,6 +19,13 @@ import (
 const (
 	TypeGitHub = "github"
 	TypeGitLab = "gitlab"
+	TypeOIDC   = "oidc"
+)
+
+// Default OIDC claim names used when a provider does not override them.
+const (
+	defaultUsernameClaim = "preferred_username"
+	defaultGroupsClaim   = "groups"
 )
 
 // cookieKeyLen is the required AES-256 key length in bytes.
@@ -37,6 +44,11 @@ var (
 )
 
 // ProviderConfig describes a single SSO provider.
+//
+// The OIDC fields (Issuer, Scopes, UsernameClaim, GroupsClaim, HostedDomain)
+// apply to the generic `oidc` type and to the named presets that expand into it.
+// They are all optional: presets supply sensible defaults and any explicit value
+// here overrides the preset default.
 type ProviderConfig struct {
 	ID            string   `yaml:"id"`
 	Type          string   `yaml:"type"`
@@ -46,6 +58,13 @@ type ProviderConfig struct {
 	ClientSecret  string   `yaml:"clientSecret"`
 	AllowedOrgs   []string `yaml:"allowedOrgs"`
 	AllowedGroups []string `yaml:"allowedGroups"`
+
+	// OIDC-specific fields (generic `oidc` type and presets).
+	Issuer        string   `yaml:"issuer"`        // OIDC issuer URL (discovery base)
+	Scopes        []string `yaml:"scopes"`        // OAuth2 scopes; default openid profile email
+	UsernameClaim string   `yaml:"usernameClaim"` // id_token claim → Identity.Login (default preferred_username, then sub)
+	GroupsClaim   string   `yaml:"groupsClaim"`   // id_token claim → Identity.Groups (default groups)
+	HostedDomain  string   `yaml:"hostedDomain"`  // Google Workspace `hd` restriction (optional)
 }
 
 // Config is the top-level auth configuration. CookieKey is the decoded 32-byte
@@ -104,6 +123,13 @@ func LoadConfig(path string) (*Config, error) {
 		p.BaseURL = expandEnv(p.BaseURL)
 		p.ClientID = expandEnv(p.ClientID)
 		p.ClientSecret = expandEnv(p.ClientSecret)
+		p.Issuer = expandEnv(p.Issuer)
+		p.UsernameClaim = expandEnv(p.UsernameClaim)
+		p.GroupsClaim = expandEnv(p.GroupsClaim)
+		p.HostedDomain = expandEnv(p.HostedDomain)
+		for j := range p.Scopes {
+			p.Scopes[j] = expandEnv(p.Scopes[j])
+		}
 		for j := range p.AllowedOrgs {
 			p.AllowedOrgs[j] = expandEnv(p.AllowedOrgs[j])
 		}
@@ -176,7 +202,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("auth: duplicate provider id %q", p.ID)
 		}
 		seen[p.ID] = true
-		if p.Type != TypeGitHub && p.Type != TypeGitLab {
+		switch p.Type {
+		case TypeGitHub, TypeGitLab:
+			// no extra requirements here
+		case TypeOIDC:
+			if p.Issuer == "" {
+				return fmt.Errorf("auth: provider %q (type oidc) requires an issuer", p.ID)
+			}
+		default:
 			return fmt.Errorf("auth: provider %q has unknown type %q", p.ID, p.Type)
 		}
 		if p.ClientID == "" {

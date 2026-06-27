@@ -60,17 +60,17 @@
 ## Implementation Steps
 
 ### Task 1: Generic OIDC provider (`type: oidc`)
-- [ ] extend `ProviderConfig` with OIDC fields: `Issuer`, `Scopes []string`,
+- [x] extend `ProviderConfig` with OIDC fields: `Issuer`, `Scopes []string`,
       `UsernameClaim`, `GroupsClaim`, `HostedDomain` (all optional with defaults)
-- [ ] refactor `internal/auth/gitlab.go` into `internal/auth/oidc.go`: a generic
+- [x] refactor `internal/auth/gitlab.go` into `internal/auth/oidc.go`: a generic
       `oidcProvider` built from `oidc.NewProvider(ctx, Issuer)`, configurable
       scopes (default `openid profile email`), id_token verify + nonce, and claim
       mapping driven by `UsernameClaim` (default `preferred_username`→`sub`) and
       `GroupsClaim` (default `groups`)
-- [ ] wire `type: oidc` in the provider registry (`auth.New`) to build `oidcProvider`
-- [ ] write tests with a fake OIDC issuer (discovery + JWKS + token via `httptest`):
+- [x] wire `type: oidc` in the provider registry (`auth.New`) to build `oidcProvider`
+- [x] write tests with a fake OIDC issuer (discovery + JWKS + token via `httptest`):
       identity + groups mapping, custom claim names, nonce mismatch rejected
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Named presets (gitlab, google, entra, okta, keycloak)
 - [ ] add a preset table mapping `Type` → default `{Issuer template, Scopes,

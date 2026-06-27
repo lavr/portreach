@@ -100,6 +100,10 @@ func New(cfg *Config, opts ...Option) (*Authenticator, error) {
 			dctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
 			p, err = newGitLabProvider(dctx, pc, cfg.RedirectURL)
 			cancel()
+		case TypeOIDC:
+			dctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
+			p, err = newOIDCProvider(dctx, pc, cfg.RedirectURL)
+			cancel()
 		default:
 			err = fmt.Errorf("auth: unknown provider type %q", pc.Type)
 		}
