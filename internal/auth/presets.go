@@ -35,10 +35,17 @@ func googleIssuer(ProviderConfig) string { return "https://accounts.google.com" 
 // presets whose issuer is fully deployment-specific (Okta org, Keycloak realm).
 func baseURLIssuer(pc ProviderConfig) string { return pc.BaseURL }
 
-// gitlabIssuer defaults to gitlab.com when no self-hosted BaseURL is given.
+// gitlabIssuer defaults to gitlab.com when no self-hosted BaseURL is given. A
+// trailing slash on the configured BaseURL is trimmed: GitLab's canonical issuer
+// has no trailing slash, and OIDC discovery compares the configured issuer
+// against the discovery document verbatim, so a slash-suffixed BaseURL would
+// fail discovery. This mirrors the old dedicated GitLab provider, keeping
+// existing self-hosted configs working. (Explicit oidc `issuer` values are still
+// passed through verbatim by newOIDCProvider, for IdPs like Auth0 whose
+// canonical issuer ends in `/`.)
 func gitlabIssuer(pc ProviderConfig) string {
-	if pc.BaseURL != "" {
-		return pc.BaseURL
+	if base := strings.TrimRight(strings.TrimSpace(pc.BaseURL), "/"); base != "" {
+		return base
 	}
 	return "https://gitlab.com"
 }

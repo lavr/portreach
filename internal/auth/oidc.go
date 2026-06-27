@@ -40,7 +40,15 @@ type oidcProvider struct {
 // endpoints. ctx governs the discovery request only. Claim names and scopes fall
 // back to standard defaults when pc leaves them empty.
 func newOIDCProvider(ctx context.Context, pc ProviderConfig, redirectURL string) (*oidcProvider, error) {
-	issuer := strings.TrimRight(pc.Issuer, "/")
+	// Pass the issuer through verbatim (only trimming surrounding whitespace).
+	// OIDC discovery does an exact string comparison between the issuer URL we
+	// supply and the `issuer` in the discovery document (go-oidc only strips a
+	// trailing slash for the .well-known fetch, not for that comparison). Some
+	// IdPs publish a canonical issuer that ends in `/` — notably Auth0
+	// (https://<tenant>.auth0.com/) — so stripping the slash here would make
+	// discovery fail with an issuer mismatch. The operator must configure the
+	// issuer exactly as their IdP reports it.
+	issuer := strings.TrimSpace(pc.Issuer)
 	if issuer == "" {
 		return nil, fmt.Errorf("auth: oidc provider %q requires an issuer", pc.ID)
 	}

@@ -84,6 +84,10 @@ func TestApplyPresetDefaults(t *testing.T) {
 	}{
 		{TypeGitLab, "", "https://gitlab.com", "preferred_username", "groups", "GitLab"},
 		{TypeGitLab, "https://gitlab.corp", "https://gitlab.corp", "preferred_username", "groups", "GitLab"},
+		// A trailing slash on a self-hosted GitLab BaseURL is trimmed so discovery's
+		// verbatim issuer comparison still matches (backward compat with the old
+		// dedicated GitLab provider, which used strings.TrimRight).
+		{TypeGitLab, "https://gitlab.corp/", "https://gitlab.corp", "preferred_username", "groups", "GitLab"},
 		{TypeOkta, "https://corp.okta.com", "https://corp.okta.com", "preferred_username", "groups", "Okta"},
 		{TypeKeycloak, "https://kc.corp/realms/main", "https://kc.corp/realms/main", "preferred_username", "groups", "Keycloak"},
 		{TypeEntra, "tenant-123", "https://login.microsoftonline.com/tenant-123/v2.0", "preferred_username", "groups", "Microsoft"},

@@ -188,6 +188,31 @@ func TestOIDCRequiresIssuer(t *testing.T) {
 	}
 }
 
+// TestOIDCPreservesTrailingSlashIssuer guards against stripping a trailing
+// slash from the issuer. Some IdPs (notably Auth0) publish a canonical issuer
+// that ends in `/`, and OIDC discovery compares the configured issuer against
+// the discovery document's `issuer` verbatim. Trimming the slash would make
+// discovery fail with an issuer mismatch for those providers.
+func TestOIDCPreservesTrailingSlashIssuer(t *testing.T) {
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Discovery advertises the issuer with a trailing slash, like Auth0.
+		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+			srv.URL+"/", srv.URL+"/authorize", srv.URL+"/token", srv.URL+"/jwks")
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	_, err := newOIDCProvider(context.Background(),
+		ProviderConfig{ID: "auth0", Type: TypeOIDC, Issuer: srv.URL + "/", ClientID: "c", ClientSecret: "s"},
+		"https://portreach.corp/auth/callback")
+	if err != nil {
+		t.Fatalf("discovery should succeed for trailing-slash issuer, got: %v", err)
+	}
+}
+
 func TestOIDCExchangeMapsIdentity(t *testing.T) {
 	p, _ := newTestOIDC(t, ProviderConfig{}, func(string) map[string]any {
 		return map[string]any{
