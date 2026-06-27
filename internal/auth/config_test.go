@@ -218,6 +218,68 @@ func TestValidate(t *testing.T) {
 			t.Fatalf("want id error, got %v", err)
 		}
 	})
+
+	t.Run("oidc-valid", func(t *testing.T) {
+		c := base()
+		c.Providers[0] = ProviderConfig{ID: "corp", Type: TypeOIDC, Issuer: "https://idp.corp/realm", ClientID: "a", ClientSecret: "b"}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+	})
+
+	t.Run("oidc-missing-issuer", func(t *testing.T) {
+		c := base()
+		c.Providers[0] = ProviderConfig{ID: "corp", Type: TypeOIDC, ClientID: "a", ClientSecret: "b"}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "issuer") || !strings.Contains(err.Error(), "corp") {
+			t.Fatalf("want issuer error naming provider, got %v", err)
+		}
+	})
+
+	t.Run("preset-baseURL-required", func(t *testing.T) {
+		for _, typ := range []string{TypeOkta, TypeKeycloak, TypeEntra} {
+			c := base()
+			c.Providers[0] = ProviderConfig{ID: "p-" + typ, Type: typ, ClientID: "a", ClientSecret: "b"}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), "baseURL") || !strings.Contains(err.Error(), "p-"+typ) {
+				t.Fatalf("%s: want baseURL error naming provider, got %v", typ, err)
+			}
+		}
+	})
+
+	t.Run("preset-with-baseURL-valid", func(t *testing.T) {
+		for _, typ := range []string{TypeOkta, TypeKeycloak, TypeEntra} {
+			c := base()
+			c.Providers[0] = ProviderConfig{ID: "p-" + typ, Type: typ, BaseURL: "https://idp.corp", ClientID: "a", ClientSecret: "b"}
+			if err := c.Validate(); err != nil {
+				t.Fatalf("%s: Validate: %v", typ, err)
+			}
+		}
+	})
+
+	t.Run("gitlab-no-baseURL-valid", func(t *testing.T) {
+		c := base()
+		c.Providers[0] = ProviderConfig{ID: "gl", Type: TypeGitLab, ClientID: "a", ClientSecret: "b"}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("gitlab without baseURL should validate: %v", err)
+		}
+	})
+
+	t.Run("google-without-hd-valid", func(t *testing.T) {
+		c := base()
+		c.Providers[0] = ProviderConfig{ID: "g", Type: TypeGoogle, ClientID: "a", ClientSecret: "b"}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("google without hd should validate: %v", err)
+		}
+	})
+
+	t.Run("google-with-hd-valid", func(t *testing.T) {
+		c := base()
+		c.Providers[0] = ProviderConfig{ID: "g", Type: TypeGoogle, HostedDomain: "corp.com", ClientID: "a", ClientSecret: "b"}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("google with hd should validate: %v", err)
+		}
+	})
 }
 
 func TestLoadConfigBadCookieKey(t *testing.T) {

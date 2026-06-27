@@ -187,6 +187,21 @@ func (c *Config) Enabled() bool {
 	return len(c.Providers) > 0
 }
 
+// baseURLHint returns a short, human-friendly description of what a preset's
+// BaseURL should contain, used to make validation errors actionable.
+func baseURLHint(t string) string {
+	switch t {
+	case TypeOkta:
+		return "Okta org issuer URL"
+	case TypeKeycloak:
+		return "Keycloak realm issuer URL"
+	case TypeEntra:
+		return "Entra tenant id or issuer URL"
+	default:
+		return "issuer URL"
+	}
+}
+
 // Validate checks an enabled config for consistency. A disabled (no-provider)
 // config is always valid.
 func (c *Config) Validate() error {
@@ -209,9 +224,17 @@ func (c *Config) Validate() error {
 		}
 		seen[p.ID] = true
 		switch p.Type {
-		case TypeGitHub, TypeGitLab, TypeGoogle, TypeEntra, TypeOkta, TypeKeycloak:
-			// presets supply their own defaults; deeper per-preset field
-			// requirements are enforced in a later validation pass
+		case TypeGitHub, TypeGitLab, TypeGoogle:
+			// github is OAuth2+REST; gitlab and google have built-in default
+			// issuers (gitlab.com / accounts.google.com), so BaseURL is optional.
+			// Google's hostedDomain (hd) is optional.
+		case TypeOkta, TypeKeycloak, TypeEntra:
+			// These presets have no default issuer: it is fully
+			// deployment-specific (Okta org, Keycloak realm, Entra tenant) and
+			// is derived from BaseURL, so BaseURL must be set.
+			if p.BaseURL == "" {
+				return fmt.Errorf("auth: provider %q (type %s) requires baseURL (the %s)", p.ID, p.Type, baseURLHint(p.Type))
+			}
 		case TypeOIDC:
 			if p.Issuer == "" {
 				return fmt.Errorf("auth: provider %q (type oidc) requires an issuer", p.ID)

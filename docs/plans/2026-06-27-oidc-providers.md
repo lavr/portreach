@@ -97,12 +97,12 @@
 - [x] run tests — must pass before Task 4
 
 ### Task 4: Config validation for oidc + presets
-- [ ] `Config.Validate()`: `oidc` requires `Issuer`; `okta`/`keycloak`/`entra`
+- [x] `Config.Validate()`: `oidc` requires `Issuer`; `okta`/`keycloak`/`entra`
       require `BaseURL`/tenant; `google` `hd` optional; unknown type still rejected
-- [ ] friendly errors naming the offending provider `id`
-- [ ] write tests: valid oidc, missing issuer, preset missing BaseURL, unknown
+- [x] friendly errors naming the offending provider `id`
+- [x] write tests: valid oidc, missing issuer, preset missing BaseURL, unknown
       type, google with/without hd
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: Helm + docs
 - [ ] `charts/portreach/values.yaml`: document the new provider `type`s and OIDC
