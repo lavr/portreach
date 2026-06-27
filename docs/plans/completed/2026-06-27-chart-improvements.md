@@ -7,10 +7,10 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
 **A. Flexible agent discovery DNS (portable across cluster domains)**
 - The chart hard-codes the agent discovery FQDN as `<svc>.<ns>.svc.<clusterDomain>`
   with `clusterDomain` defaulting to `cluster.local`. On clusters whose DNS domain
-  is **not** `cluster.local` (e.g. Acme: dev=`kube-dev.corp.example`,
-  prodone=`kube-prod.corp.example`), the UI's `PORTREACH_AGENTS_DNS` resolves to
-  NXDOMAIN → UI finds zero agents → `/api/check` returns 502. Observed live on the
-  Acme `dev` cluster.
+  is **not** `cluster.local` (e.g. dev=`kube-dev.corp.example`,
+  prod=`kube-prod.corp.example`), the UI's `PORTREACH_AGENTS_DNS` resolves to
+  NXDOMAIN → UI finds zero agents → `/api/check` returns 502. Observed live on a
+  `dev` cluster.
 - Make the discovery name flexible via a priority chain, portable by default:
   1. **`ui.agentsDnsName`** — raw override, used verbatim (escape hatch: any FQDN,
      bare name, cross-namespace, or external DNS name).
@@ -49,7 +49,7 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
 - `charts/portreach/values.yaml` — `clusterDomain: cluster.local`,
   `image.repository`, `image.tag: ""`, `ui:` block.
 - Published image tags today: `0.1.0`, `0.1.0-rootless`, `latest`, `latest-rootless`.
-- Empirically verified on Acme `dev` (domain `kube-dev.corp.example`):
+- Empirically verified on a `dev` cluster (domain `kube-dev.corp.example`):
   - `<svc>.<ns>.svc.cluster.local` → NXDOMAIN (the bug).
   - bare `portreach-agent` via `kubectl set env` → the **Go** UI resolver resolved
     all 10 agents, `/api/check` returned per-node results. Proves the search-domain
@@ -85,7 +85,7 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
 ## What Goes Where
 - **Implementation Steps** (`[ ]`): chart templates, values, chart README, docs,
   `Chart.yaml` bump.
-- **Post-Completion** (no checkboxes): republish chart `0.1.1`; clean the Acme
+- **Post-Completion** (no checkboxes): republish chart `0.1.1`; clean the
   deploy wrapper (separate repo).
 
 ## Implementation Steps
@@ -194,7 +194,7 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
 - Release notes: call out the default image flavour change (rootless → plain
   `appVersion`); rootless is opt-in via `image.tag: "<ver>-rootless"`.
 
-**Acme deploy wrapper** (separate repo `sre/ci/k8s-apps/portreach-deploy`):
+**Deploy wrapper** (separate repo):
 - Bump dependency to `0.1.1`, `helm dependency update`.
 - Drop the interim `ui.extraEnv` `PORTREACH_AGENTS_DNS` workaround (stopgap while
   the chart hard-coded `cluster.local`).

@@ -62,16 +62,25 @@ func (p *githubProvider) DisplayName() string { return p.displayName }
 func (p *githubProvider) Type() string        { return TypeGitHub }
 
 // AuthCodeURL returns the GitHub authorization URL for the given state. GitHub
-// is not an OIDC provider, so nonce is ignored.
-func (p *githubProvider) AuthCodeURL(state, _ string) string {
+// is not an OIDC provider, so nonce is ignored. A non-empty redirectURL
+// overrides the configured callback for this request (host-derived mode).
+func (p *githubProvider) AuthCodeURL(state, _, redirectURL string) string {
+	if redirectURL != "" {
+		return p.oauth.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", redirectURL))
+	}
 	return p.oauth.AuthCodeURL(state)
 }
 
 // Exchange swaps the authorization code for a token, then fetches the user and
 // their org memberships, mapping them into an Identity (Groups = org logins).
-// GitHub issues no id_token, so nonce is ignored.
-func (p *githubProvider) Exchange(ctx context.Context, code, _ string) (Identity, error) {
-	tok, err := p.oauth.Exchange(ctx, code)
+// GitHub issues no id_token, so nonce is ignored. redirectURL must match the
+// value passed to AuthCodeURL; empty uses the configured default.
+func (p *githubProvider) Exchange(ctx context.Context, code, _, redirectURL string) (Identity, error) {
+	var opts []oauth2.AuthCodeOption
+	if redirectURL != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("redirect_uri", redirectURL))
+	}
+	tok, err := p.oauth.Exchange(ctx, code, opts...)
 	if err != nil {
 		return Identity{}, fmt.Errorf("auth: github token exchange: %w", err)
 	}

@@ -224,6 +224,70 @@ func TestChartConfigRoundTrips(t *testing.T) {
 	}
 }
 
+const authHostDerivedValues = `
+ui:
+  auth:
+    enabled: true
+    redirectURL: ""
+    allowedRedirectHosts: [portreach.cluster-one.k8s, portreach.shared.k8s]
+    forwardedHostHeader: X-Original-Host
+    cookieKey: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    providers:
+      - id: github
+        type: github
+        clientID: ghid
+        clientSecret: gh-secret
+`
+
+func TestChartAuthHostDerived(t *testing.T) {
+	requireHelm(t)
+	vals := writeValues(t, authHostDerivedValues)
+	cm := helmTemplate(t, "-f", vals, "--show-only", "templates/configmap-ui-auth.yaml")
+
+	// Host-derived mode: no redirectURL key, but the derivation knobs are present.
+	if strings.Contains(cm, "redirectURL:") {
+		t.Errorf("host-derived config should omit redirectURL\n---\n%s", cm)
+	}
+	for _, want := range []string{
+		"allowedRedirectHosts:",
+		"portreach.cluster-one.k8s",
+		"forwardedHostHeader: X-Original-Host",
+	} {
+		if !strings.Contains(cm, want) {
+			t.Errorf("configmap missing %q\n---\n%s", want, cm)
+		}
+	}
+
+	// The rendered config must load and validate (empty redirectURL is allowed).
+	var doc struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal([]byte(cm), &doc); err != nil {
+		t.Fatalf("parse configmap: %v", err)
+	}
+	t.Setenv("PORTREACH_AUTH_COOKIE_KEY", strings.Repeat("a", 64))
+	t.Setenv("PORTREACH_AUTH_GITHUB_CLIENT_SECRET", "gh-secret")
+
+	f := filepath.Join(t.TempDir(), "auth.yaml")
+	if err := os.WriteFile(f, []byte(doc.Data["auth.yaml"]), 0o600); err != nil {
+		t.Fatalf("write auth.yaml: %v", err)
+	}
+	cfg, err := auth.LoadConfig(f)
+	if err != nil {
+		t.Fatalf("LoadConfig on host-derived config: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("host-derived config failed Validate: %v", err)
+	}
+	if cfg.RedirectURL != "" {
+		t.Errorf("RedirectURL = %q, want empty (host-derived)", cfg.RedirectURL)
+	}
+	if len(cfg.AllowedRedirectHosts) != 2 || cfg.ForwardedHostHeader != "X-Original-Host" {
+		t.Errorf("derivation knobs not threaded: hosts=%v header=%q",
+			cfg.AllowedRedirectHosts, cfg.ForwardedHostHeader)
+	}
+}
+
 func TestChartAuthOff(t *testing.T) {
 	requireHelm(t)
 	dep := helmTemplate(t, "--show-only", "templates/deployment-ui.yaml")

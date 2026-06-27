@@ -217,7 +217,7 @@ func TestGitLabPresetExchange(t *testing.T) {
 	if p.DisplayName() != "GitLab" {
 		t.Errorf("DisplayName = %q, want GitLab", p.DisplayName())
 	}
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestGitLabPresetGroupsDirectFallback(t *testing.T) {
 		}
 	})
 
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestGitLabPresetGroupsOverrideDisablesFallback(t *testing.T) {
 	if p.groupsFallback != "" {
 		t.Errorf("groupsFallback = %q, want empty when groupsClaim overridden", p.groupsFallback)
 	}
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestOktaKeycloakPresetExchange(t *testing.T) {
 			if p.Type() != typ {
 				t.Errorf("Type = %q, want %q", p.Type(), typ)
 			}
-			id, err := p.Exchange(context.Background(), "code", "n1")
+			id, err := p.Exchange(context.Background(), "code", "n1", "")
 			if err != nil {
 				t.Fatalf("Exchange: %v", err)
 			}
@@ -315,7 +315,7 @@ func TestEntraPresetExchange(t *testing.T) {
 	if p.Type() != TypeEntra {
 		t.Errorf("Type = %q, want %q", p.Type(), TypeEntra)
 	}
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}

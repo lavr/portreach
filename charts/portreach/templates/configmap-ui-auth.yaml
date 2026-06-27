@@ -1,15 +1,16 @@
 {{- if and .Values.ui.enabled .Values.ui.auth.enabled -}}
 {{- $a := .Values.ui.auth -}}
-{{- if not $a.redirectURL -}}
-{{- fail "ui.auth.enabled is true but ui.auth.redirectURL is empty" -}}
-{{- end -}}
 {{- if not $a.providers -}}
 {{- fail "ui.auth.enabled is true but ui.auth.providers is empty" -}}
 {{- end -}}
+{{- /* redirectURL is optional: empty selects host-derived callback mode. */ -}}
 {{- $auth := dict
-      "redirectURL" $a.redirectURL
       "cookieKey" (printf "${%s}" $a.cookieKeyEnv)
       "allowedUsers" ($a.allowedUsers | default list) -}}
+{{- with $a.redirectURL }}{{- $_ := set $auth "redirectURL" . -}}{{- end -}}
+{{- with $a.allowedRedirectHosts }}{{- $_ := set $auth "allowedRedirectHosts" . -}}{{- end -}}
+{{- with $a.forwardedHostHeader }}{{- $_ := set $auth "forwardedHostHeader" . -}}{{- end -}}
+{{- with $a.forwardedProtoHeader }}{{- $_ := set $auth "forwardedProtoHeader" . -}}{{- end -}}
 {{- $providers := list -}}
 {{- range $a.providers -}}
   {{- $id := required "ui.auth.providers[].id is required" .id -}}

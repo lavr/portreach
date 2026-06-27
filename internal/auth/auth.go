@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/lavr/portreach/internal/i18n"
@@ -59,6 +60,11 @@ type oauthState struct {
 	State    string `json:"state"`
 	Nonce    string `json:"nonce"`
 	Provider string `json:"provider"`
+	// Callback pins the per-request redirect_uri derived at login (host-derived
+	// mode); it is replayed at /auth/callback so the two ends of the flow use an
+	// identical redirect_uri and the host cannot be swapped mid-flow. Empty in
+	// fixed-redirectURL mode.
+	Callback string `json:"cb,omitempty"`
 	Expiry   int64  `json:"exp"`
 }
 
@@ -145,6 +151,15 @@ func (a *Authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unknown provider", http.StatusNotFound)
 			return
 		}
+		// Determine the redirect_uri for this flow: empty in fixed mode (the
+		// provider uses its configured RedirectURL), or a host-derived callback
+		// in dynamic mode. In dynamic mode an optional allowlist rejects unknown
+		// hosts before the IdP is ever contacted.
+		callback := a.callbackOverride(r)
+		if callback != "" && !a.redirectHostAllowed(callback) {
+			http.Error(w, "redirect host not allowed", http.StatusBadRequest)
+			return
+		}
 		state, err := randToken()
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -159,13 +174,14 @@ func (a *Authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 			State:    state,
 			Nonce:    nonce,
 			Provider: pid,
+			Callback: callback,
 			Expiry:   time.Now().Add(oauthStateMaxAge).Unix(),
 		}
 		if err := a.setStateCookie(w, st); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, p.AuthCodeURL(state, nonce), http.StatusFound)
+		http.Redirect(w, r, p.AuthCodeURL(state, nonce, callback), http.StatusFound)
 		return
 	}
 
@@ -195,6 +211,72 @@ func (a *Authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = loginTmpl.ExecuteTemplate(w, "login.html", data)
+}
+
+// callbackOverride returns the per-request OAuth redirect_uri, or "" to fall
+// back to the provider's configured RedirectURL. When auth.redirectURL is set
+// (fixed mode) it returns "" so today's behaviour is preserved exactly.
+// Otherwise (host-derived mode) it builds <proto>://<host>/auth/callback from
+// the configured forwarded headers, falling back to r.Host and the connection's
+// TLS state. The host/scheme are taken only from the trusted, configured
+// headers — never from any other user-controllable field.
+func (a *Authenticator) callbackOverride(r *http.Request) string {
+	if a.cfg.RedirectURL != "" {
+		return ""
+	}
+	hostHeader := a.cfg.ForwardedHostHeader
+	if hostHeader == "" {
+		hostHeader = defaultForwardedHostHeader
+	}
+	protoHeader := a.cfg.ForwardedProtoHeader
+	if protoHeader == "" {
+		protoHeader = defaultForwardedProtoHeader
+	}
+
+	host := firstHeaderValue(r.Header.Get(hostHeader))
+	if host == "" {
+		host = r.Host
+	}
+	proto := firstHeaderValue(r.Header.Get(protoHeader))
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	u := url.URL{Scheme: proto, Host: host, Path: CallbackPath}
+	return u.String()
+}
+
+// firstHeaderValue returns the first comma-separated token of a forwarded
+// header, trimmed. Proxies may chain values (e.g. "https, http"); the first is
+// the one set closest to the client by the outermost trusted proxy.
+func firstHeaderValue(v string) string {
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
+// redirectHostAllowed reports whether the host of a derived callback URL passes
+// the optional AllowedRedirectHosts allowlist. An empty list allows any host
+// (the IdP's registered-callback check is the backstop).
+func (a *Authenticator) redirectHostAllowed(callback string) bool {
+	if len(a.cfg.AllowedRedirectHosts) == 0 {
+		return true
+	}
+	u, err := url.Parse(callback)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	for _, h := range a.cfg.AllowedRedirectHosts {
+		if h == host {
+			return true
+		}
+	}
+	return false
 }
 
 // handleCallback completes the authorization-code flow: it validates the state
@@ -229,7 +311,7 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), callbackExchangeTimeout)
 	defer cancel()
-	id, err := p.Exchange(ctx, code, st.Nonce)
+	id, err := p.Exchange(ctx, code, st.Nonce, st.Callback)
 	if err != nil {
 		// A hosted-domain (Google `hd`) mismatch is an access denial, not an
 		// upstream failure: the login succeeded but the account is out of scope.

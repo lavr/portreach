@@ -172,7 +172,7 @@ func TestOIDCProviderMetadataAndDefaults(t *testing.T) {
 		t.Errorf("groupsClaim = %q, want %q", p.groupsClaim, defaultGroupsClaim)
 	}
 
-	url := p.AuthCodeURL("xyz-state", "the-nonce")
+	url := p.AuthCodeURL("xyz-state", "the-nonce", "")
 	for _, want := range []string{"state=xyz-state", "nonce=the-nonce", "authorize", "scope=openid"} {
 		if !strings.Contains(url, want) {
 			t.Errorf("AuthCodeURL %q missing %q", url, want)
@@ -224,7 +224,7 @@ func TestOIDCExchangeMapsIdentity(t *testing.T) {
 		}
 	})
 
-	id, err := p.Exchange(context.Background(), "the-code", "the-nonce")
+	id, err := p.Exchange(context.Background(), "the-code", "the-nonce", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestOIDCExchangeFallsBackToSub(t *testing.T) {
 		}
 	})
 
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestOIDCExchangeCustomClaims(t *testing.T) {
 		t.Fatalf("custom claims not applied: username=%q groups=%q", p.usernameClaim, p.groupsClaim)
 	}
 
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestOIDCExchangeRejectsUnverifiedEmail(t *testing.T) {
 				}
 			})
 
-		if _, err := p.Exchange(context.Background(), "code", "n1"); err == nil {
+		if _, err := p.Exchange(context.Background(), "code", "n1", ""); err == nil {
 			t.Fatalf("email_verified=%v: expected rejection, got nil", ev)
 		} else if !strings.Contains(err.Error(), "not verified") {
 			t.Errorf("email_verified=%v: error = %v, want not-verified", ev, err)
@@ -321,7 +321,7 @@ func TestOIDCExchangeAcceptsVerifiedEmail(t *testing.T) {
 		p, _ := newTestOIDC(t, ProviderConfig{UsernameClaim: "email"},
 			func(string) map[string]any { return c })
 
-		id, err := p.Exchange(context.Background(), "code", "n1")
+		id, err := p.Exchange(context.Background(), "code", "n1", "")
 		if err != nil {
 			t.Fatalf("claims=%v: Exchange: %v", c, err)
 		}
@@ -342,7 +342,7 @@ func TestOIDCExchangeStringGroupsClaim(t *testing.T) {
 		}
 	})
 
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestOIDCExchangeCustomScopes(t *testing.T) {
 	p, _ := newTestOIDC(t, ProviderConfig{Scopes: []string{"openid", "email", "custom"}},
 		func(string) map[string]any { return map[string]any{} })
 
-	url := p.AuthCodeURL("s", "n")
+	url := p.AuthCodeURL("s", "n", "")
 	if !strings.Contains(url, "custom") {
 		t.Errorf("AuthCodeURL %q missing custom scope", url)
 	}
@@ -370,7 +370,7 @@ func TestOIDCExchangeNonceMismatch(t *testing.T) {
 		}
 	})
 
-	if _, err := p.Exchange(context.Background(), "code", "expected-nonce"); err == nil {
+	if _, err := p.Exchange(context.Background(), "code", "expected-nonce", ""); err == nil {
 		t.Fatal("expected nonce mismatch error, got nil")
 	} else if !strings.Contains(err.Error(), "nonce") {
 		t.Errorf("error = %v, want nonce mismatch", err)
@@ -385,7 +385,7 @@ func TestOIDCExchangeEmptyLogin(t *testing.T) {
 		}
 	})
 
-	if _, err := p.Exchange(context.Background(), "code", "n1"); err == nil {
+	if _, err := p.Exchange(context.Background(), "code", "n1", ""); err == nil {
 		t.Fatal("expected empty-login error, got nil")
 	}
 }
@@ -405,7 +405,7 @@ func TestOIDCHostedDomainMatchMapsEmail(t *testing.T) {
 			}
 		})
 
-	id, err := p.Exchange(context.Background(), "code", "n1")
+	id, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestOIDCHostedDomainMismatchRejected(t *testing.T) {
 			}
 		})
 
-	_, err := p.Exchange(context.Background(), "code", "n1")
+	_, err := p.Exchange(context.Background(), "code", "n1", "")
 	if err == nil {
 		t.Fatal("expected hosted-domain mismatch error, got nil")
 	}
@@ -448,7 +448,7 @@ func TestOIDCHostedDomainMissingClaimRejected(t *testing.T) {
 			}
 		})
 
-	if _, err := p.Exchange(context.Background(), "code", "n1"); !errors.Is(err, errHostedDomainMismatch) {
+	if _, err := p.Exchange(context.Background(), "code", "n1", ""); !errors.Is(err, errHostedDomainMismatch) {
 		t.Fatalf("error = %v, want errHostedDomainMismatch for missing hd", err)
 	}
 }
@@ -458,13 +458,13 @@ func TestOIDCHostedDomainAuthParam(t *testing.T) {
 		ProviderConfig{Type: TypeGoogle, HostedDomain: "corp.com"},
 		func(string) map[string]any { return map[string]any{} })
 
-	if got := p.AuthCodeURL("s", "n"); !strings.Contains(got, "hd=corp.com") {
+	if got := p.AuthCodeURL("s", "n", ""); !strings.Contains(got, "hd=corp.com") {
 		t.Errorf("AuthCodeURL %q missing hd=corp.com param", got)
 	}
 
 	// Without a hosted domain the hd param must be absent.
 	p2, _ := newTestOIDC(t, ProviderConfig{}, func(string) map[string]any { return map[string]any{} })
-	if got := p2.AuthCodeURL("s", "n"); strings.Contains(got, "hd=") {
+	if got := p2.AuthCodeURL("s", "n", ""); strings.Contains(got, "hd=") {
 		t.Errorf("AuthCodeURL %q should not contain hd param without HostedDomain", got)
 	}
 }
@@ -479,7 +479,7 @@ func TestOIDCExchangeWrongAudienceRejected(t *testing.T) {
 		}
 	})
 
-	if _, err := p.Exchange(context.Background(), "code", "n1"); err == nil {
+	if _, err := p.Exchange(context.Background(), "code", "n1", ""); err == nil {
 		t.Fatal("expected audience verification error, got nil")
 	}
 }

@@ -16,25 +16,30 @@ import (
 // state/nonce into a query string and Exchange returns a canned Identity (or
 // error), recording the nonce it was given.
 type fakeProvider struct {
-	id        string
-	display   string
-	ptype     string
-	identity  Identity
-	exchErr   error
-	lastNonce string
+	id          string
+	display     string
+	ptype       string
+	identity    Identity
+	exchErr     error
+	lastNonce   string
+	lastAuthURL string // redirectURL passed to AuthCodeURL
+	lastExchURL string // redirectURL passed to Exchange
 }
 
 func (f *fakeProvider) ID() string          { return f.id }
 func (f *fakeProvider) DisplayName() string { return f.display }
 func (f *fakeProvider) Type() string        { return f.ptype }
 
-func (f *fakeProvider) AuthCodeURL(state, nonce string) string {
+func (f *fakeProvider) AuthCodeURL(state, nonce, redirectURL string) string {
+	f.lastAuthURL = redirectURL
 	return "https://provider.example/authorize?state=" + url.QueryEscape(state) +
-		"&nonce=" + url.QueryEscape(nonce)
+		"&nonce=" + url.QueryEscape(nonce) +
+		"&redirect_uri=" + url.QueryEscape(redirectURL)
 }
 
-func (f *fakeProvider) Exchange(_ context.Context, _, nonce string) (Identity, error) {
+func (f *fakeProvider) Exchange(_ context.Context, _, nonce, redirectURL string) (Identity, error) {
 	f.lastNonce = nonce
+	f.lastExchURL = redirectURL
 	return f.identity, f.exchErr
 }
 

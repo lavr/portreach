@@ -23,9 +23,14 @@ type Provider interface {
 	// AuthCodeURL returns the provider's authorization URL for the given
 	// opaque state value. nonce is the OIDC nonce bound to the request; it is
 	// used by OIDC providers (GitLab) and ignored by others (GitHub).
-	AuthCodeURL(state, nonce string) string
+	// redirectURL, when non-empty, overrides the provider's configured
+	// redirect_uri for this single request (host-derived callback mode); an
+	// empty value uses the provider's configured default — today's behaviour.
+	AuthCodeURL(state, nonce, redirectURL string) string
 	// Exchange swaps an authorization code for the authenticated Identity.
 	// nonce is verified against the OIDC id_token by providers that issue one
-	// (GitLab); it is ignored by others (GitHub).
-	Exchange(ctx context.Context, code, nonce string) (Identity, error)
+	// (GitLab); it is ignored by others (GitHub). redirectURL must match the
+	// value passed to AuthCodeURL for this flow (OAuth requires the redirect_uri
+	// to be identical on both calls); empty uses the configured default.
+	Exchange(ctx context.Context, code, nonce, redirectURL string) (Identity, error)
 }
