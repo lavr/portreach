@@ -71,13 +71,15 @@ ui:
   discovery:
     mode: relative
 
-  # OR pin the domain explicitly
-  # discovery:
-  #   mode: fqdn
-  # clusterDomain: kubeprodone.example.ru
-
   # OR override the whole name (cross-namespace, external, etc.)
   # agentsDnsName: portreach-agent.monitoring.svc.cluster.local
+
+  # OR pin the domain explicitly:
+  # discovery:
+  #   mode: fqdn
+
+# clusterDomain is TOP-LEVEL (not under ui:); used only in discovery.mode: fqdn
+# clusterDomain: kubeprodone.example.ru
 ```
 
 ## Image tag

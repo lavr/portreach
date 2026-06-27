@@ -38,6 +38,15 @@ func helmTemplate(t *testing.T, args ...string) string {
 	return string(out)
 }
 
+// helmTemplateErr runs `helm template` and returns the combined output and the
+// command error without failing the test, for asserting expected render failures.
+func helmTemplateErr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	full := append([]string{"template", "rel", chartDir}, args...)
+	out, err := exec.Command("helm", full...).CombinedOutput()
+	return string(out), err
+}
+
 // writeValues writes content to a temp values file and returns its path.
 func writeValues(t *testing.T, content string) string {
 	t.Helper()
@@ -314,6 +323,27 @@ func TestChartDiscoveryDNS(t *testing.T) {
 				t.Errorf("PORTREACH_AGENTS_DNS = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestChartDiscoveryModeValidation asserts an unknown/typo'd discovery mode
+// fails the render loudly instead of silently falling back to relative, and that
+// a null ui.discovery block falls back to the relative default rather than
+// panicking on a nil-pointer deref.
+func TestChartDiscoveryModeValidation(t *testing.T) {
+	requireHelm(t)
+	const svc = "rel-portreach-agent"
+
+	// Wrong case is a typo, not one of relative|fqdn|bare: must fail the render.
+	if out, err := helmTemplateErr(t, "--namespace", "demo", "--set", "ui.discovery.mode=Fqdn"); err == nil {
+		t.Errorf("unknown discovery mode should fail render, got success:\n%s", out)
+	}
+
+	// ui.discovery: null must fall back to the relative default, not panic.
+	vals := writeValues(t, "ui:\n  discovery: null\n")
+	out := helmTemplate(t, "-f", vals, "--namespace", "demo", "--show-only", "templates/deployment-ui.yaml")
+	if got := agentsDNS(t, out); got != svc+".demo.svc" {
+		t.Errorf("null discovery: PORTREACH_AGENTS_DNS = %q, want %q", got, svc+".demo.svc")
 	}
 }
 

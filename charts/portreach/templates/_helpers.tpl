@@ -87,13 +87,15 @@ Priority chain (portable by default):
 {{- with .Values.ui.agentsDnsName -}}
 {{- . -}}
 {{- else -}}
-{{- $mode := .Values.ui.discovery.mode | default "relative" -}}
+{{- $mode := (.Values.ui.discovery | default dict).mode | default "relative" -}}
 {{- if eq $mode "fqdn" -}}
 {{- printf "%s.%s.svc.%s" $svc .Release.Namespace .Values.clusterDomain -}}
 {{- else if eq $mode "bare" -}}
 {{- $svc -}}
-{{- else -}}
+{{- else if eq $mode "relative" -}}
 {{- printf "%s.%s.svc" $svc .Release.Namespace -}}
+{{- else -}}
+{{- fail (printf "ui.discovery.mode must be relative, fqdn or bare (got %q)" $mode) -}}
 {{- end -}}
 {{- end -}}
 {{- end }}
