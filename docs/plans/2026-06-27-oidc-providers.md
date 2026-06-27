@@ -118,11 +118,11 @@
 - [x] run `go test ./...` — no regression
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify generic `oidc` works end-to-end against a fake issuer; each preset
+- [x] verify generic `oidc` works end-to-end against a fake issuer; each preset
       expands correctly; google `hd` enforced; gitlab/github unchanged
-- [ ] verify edge cases: custom claims, missing issuer, hd mismatch, unknown type
-- [ ] run full unit suite `go test ./... -v`; `go vet ./...`; `helm lint`
-- [ ] verify `internal/auth` coverage ≥ 80%
+- [x] verify edge cases: custom claims, missing issuer, hd mismatch, unknown type
+- [x] run full unit suite `go test ./... -v`; `go vet ./...`; `helm lint`
+- [x] verify `internal/auth` coverage ≥ 80% (actual: 89.6%)
 
 ### Task 7: [Final] Knowledge + docs polish
 - [ ] re-read docs for accuracy; note the generic-OIDC model and preset table
