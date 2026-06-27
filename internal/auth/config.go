@@ -46,6 +46,13 @@ const (
 	defaultForwardedProtoHeader = "X-Forwarded-Proto"
 )
 
+// Accepted values for Config.CookieSecure. Empty is treated as auto.
+const (
+	cookieSecureAuto   = "auto"
+	cookieSecureAlways = "always"
+	cookieSecureNever  = "never"
+)
+
 // Default base URL and display name for github, the one non-OIDC provider.
 // OIDC presets (including gitlab) own their issuer/display-name defaults in the
 // preset table (see presets.go), so they are deliberately absent here.
@@ -104,6 +111,16 @@ type Config struct {
 	ForwardedProtoHeader string   `yaml:"forwardedProtoHeader"`
 	AllowedRedirectHosts []string `yaml:"allowedRedirectHosts"`
 
+	// CookieSecure controls the Secure attribute on the auth cookies:
+	//   auto (default) — Secure iff the request scheme is https (so login works
+	//                    over both http and https, secure whenever it can be);
+	//   always         — Secure unconditionally (require https);
+	//   never          — never Secure (deliberate http-only).
+	// Empty is treated as auto. The scheme is detected exactly like the
+	// host-derived callback, so the cookie's Secure flag and the redirect_uri
+	// scheme always agree.
+	CookieSecure string `yaml:"cookieSecure"`
+
 	// CookieKey is the decoded key, populated by LoadConfig.
 	CookieKey []byte `yaml:"-"`
 }
@@ -143,6 +160,7 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.CookieKeyRaw = expandEnv(cfg.CookieKeyRaw)
 	cfg.ForwardedHostHeader = expandEnv(cfg.ForwardedHostHeader)
 	cfg.ForwardedProtoHeader = expandEnv(cfg.ForwardedProtoHeader)
+	cfg.CookieSecure = expandEnv(cfg.CookieSecure)
 	for i := range cfg.AllowedUsers {
 		cfg.AllowedUsers[i] = expandEnv(cfg.AllowedUsers[i])
 	}
@@ -241,6 +259,12 @@ func (c *Config) Validate() error {
 	// Config.RedirectURL). A non-empty value pins one fixed callback.
 	if len(c.CookieKey) != cookieKeyLen {
 		return fmt.Errorf("auth: cookieKey must decode to %d bytes", cookieKeyLen)
+	}
+	switch c.CookieSecure {
+	case "", cookieSecureAuto, cookieSecureAlways, cookieSecureNever:
+		// ok (empty == auto)
+	default:
+		return fmt.Errorf("auth: cookieSecure must be %q, %q or %q", cookieSecureAuto, cookieSecureAlways, cookieSecureNever)
 	}
 	seen := make(map[string]bool, len(c.Providers))
 	for _, p := range c.Providers {

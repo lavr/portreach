@@ -90,6 +90,12 @@ ui:
 
 See `docs/configuration.md` (Host-derived callback) for the trust model.
 
+For **http** deployments set `ui.auth.cookieSecure` to `auto` (default — `Secure`
+only over https, so login works on both) or `never` (deliberate http-only);
+`always` requires https. Browsers drop `Secure` cookies over http, so leaving the
+default `auto` is what lets login work without TLS. See `docs/configuration.md`
+(Cookie `Secure` attribute).
+
 Inline mode, where the chart creates `<ui>-auth`:
 
 ```yaml

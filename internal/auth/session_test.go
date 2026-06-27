@@ -107,7 +107,7 @@ func TestNewGCMRejectsBadKeyLength(t *testing.T) {
 func TestSetSessionCookie(t *testing.T) {
 	key := testKey(3)
 	rec := httptest.NewRecorder()
-	if err := setSessionCookie(rec, key, sampleSession()); err != nil {
+	if err := setSessionCookie(rec, key, sampleSession(), true); err != nil {
 		t.Fatalf("setSessionCookie: %v", err)
 	}
 	resp := rec.Result()
@@ -134,7 +134,7 @@ func TestSetSessionCookie(t *testing.T) {
 
 func TestClearSessionCookie(t *testing.T) {
 	rec := httptest.NewRecorder()
-	clearSessionCookie(rec)
+	clearSessionCookie(rec, true)
 	var c *http.Cookie
 	for _, ck := range rec.Result().Cookies() {
 		if ck.Name == sessionCookieName {

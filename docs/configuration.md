@@ -368,6 +368,31 @@ How it stays safe:
   (no proxy), set a fixed `redirectURL` or an `allowedRedirectHosts` allowlist —
   do not run host-derived mode open to the internet without one.
 
+### Cookie `Secure` attribute (http deployments)
+
+Browsers drop `Secure` cookies sent over plain **http**, so a hard-coded
+`Secure` flag breaks the login flow on an http-only deployment (the state cookie
+is never stored and the callback then fails CSRF validation). `auth.cookieSecure`
+controls the attribute on both auth cookies (the OAuth state cookie and the
+session cookie):
+
+| `cookieSecure` | Behaviour |
+| --- | --- |
+| `auto` (default, empty = auto) | `Secure` only when the request is https. Works over **both** http and https; secure whenever it can be. |
+| `always` | `Secure` unconditionally (require https). |
+| `never` | never `Secure` (deliberate http-only). |
+
+The scheme is detected exactly like the host-derived callback — from the
+configured `forwardedProtoHeader` (default `X-Forwarded-Proto`), falling back to
+the connection's TLS state — so the cookie's `Secure` flag and the derived
+`redirect_uri` scheme always agree (http callback ⇒ non-secure cookie; https ⇒
+secure).
+
+> **Security caveat.** Over http the session cookie travels in clear text —
+> acceptable on a trusted internal network, **not** on the public internet. Keep
+> `auto` (or `always`) and front the service with TLS for any internet-facing
+> deployment; reserve `never` for deliberately http-only, trusted setups.
+
 ### Audit logging (for security / ИБ)
 
 When started, the UI emits structured `log/slog` **JSON** audit events to
