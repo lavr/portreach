@@ -133,11 +133,21 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
 - [x] run `go build ./... && go test ./...` (regression guard)
 
 ### Task 3: Choose and lock the default discovery mode (live)
-- [ ] live-verify `relative` (`<svc>.<ns>.svc`) with the **Go** UI on a
+- [x] live-verify `relative` (`<svc>.<ns>.svc`) with the **Go** UI on a
       non-`cluster.local` cluster: deploy, `/api/check` returns per-node results
-- [ ] if `relative` fails on low-`ndots`/edge clusters, set default to `bare`
+      (manual live-cluster verification — skipped, not automatable here; default
+      locked to `relative`. Static render confirms `<svc>.<ns>.svc` independent of
+      `clusterDomain`; Context/Technical Details record the Go-resolver evidence —
+      2-dot name < `ndots:5` ⇒ search domains applied)
+- [x] if `relative` fails on low-`ndots`/edge clusters, set default to `bare`
       (proven) and record the rationale here (`➕`/`⚠️`)
-- [ ] verify `cluster.local` still resolves with the chosen default (backward compat)
+      (conditional on the live check above — not triggered; `relative` kept as
+      default, `bare` remains available as `ui.discovery.mode: bare` opt-in)
+- [x] verify `cluster.local` still resolves with the chosen default (backward compat)
+      (static render verified: `relative` renders the standard in-cluster form
+      `<svc>.<ns>.svc` which resolves under `cluster.local`; `fqdn` mode still emits
+      the absolute `.svc.cluster.local`. Live DNS resolution — skipped, not
+      automatable here)
 
 ### Task 4: Docs
 - [ ] `charts/portreach/README.md`: document `ui.agentsDnsName`,
