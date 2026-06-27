@@ -76,9 +76,22 @@ ui:
     # Providers mirror internal/auth ProviderConfig. Each provider's client
     # secret is injected from `existingSecret` under `clientSecretKey` into the
     # env var `clientSecretEnv`, referenced from the config as ${clientSecretEnv}.
+    #
+    # Provider `type` is one of:
+    #   github                       # OAuth2 + REST (github.com / Enterprise)
+    #   oidc                         # generic OpenID Connect — set `issuer`
+    #   gitlab | google | entra | okta | keycloak   # presets that expand to oidc
+    #
+    # OIDC fields (apply to `oidc` and the presets; all optional, presets supply
+    # sensible defaults that any explicit value here overrides):
+    #   issuer                       # OIDC issuer URL (discovery base); required for type: oidc
+    #   scopes                       # OAuth2 scopes; default [openid, profile, email]
+    #   usernameClaim                # id_token claim → login (default preferred_username, then sub)
+    #   groupsClaim                  # id_token claim → groups (default groups)
+    #   hostedDomain                 # Google Workspace `hd` restriction (google preset only)
     providers: []
       # - id: github
-      #   type: github                 # github | gitlab
+      #   type: github                 # github | oidc | gitlab|google|entra|okta|keycloak
       #   displayName: GitHub          # optional; defaults per type
       #   baseURL: ""                  # optional; self-hosted/Enterprise base URL
       #   clientID: "abc"
@@ -94,6 +107,32 @@ ui:
       #   clientSecretEnv: GITLAB_CLIENT_SECRET
       #   clientSecretKey: gitlabClientSecret
       #   allowedGroups: [infra, sre]
+      # - id: keycloak
+      #   type: oidc                   # generic OIDC: any standards-compliant IdP
+      #   displayName: "Corporate SSO"
+      #   issuer: https://keycloak.corp/realms/main
+      #   clientID: portreach
+      #   clientSecretEnv: OIDC_CLIENT_SECRET
+      #   clientSecretKey: oidcClientSecret
+      #   groupsClaim: groups          # default already `groups`; override if needed
+      #   allowedGroups: [sre, infra]
+      # - id: google
+      #   type: google                 # preset: accounts.google.com
+      #   displayName: "Google"
+      #   clientID: "ghi"
+      #   clientSecretEnv: GOOGLE_CLIENT_SECRET
+      #   clientSecretKey: googleClientSecret
+      #   hostedDomain: corp.com       # only this Google Workspace domain may sign in
+      #   # Google has no group claim — gate access by hostedDomain and/or the
+      #   # global ui.auth.allowedUsers (emails), not allowedGroups.
+      # - id: entra
+      #   type: entra                  # preset: login.microsoftonline.com/<tenant>/v2.0
+      #   displayName: "Microsoft"
+      #   baseURL: "<tenant-id>"       # Entra tenant id (or full issuer URL)
+      #   clientID: "jkl"
+      #   clientSecretEnv: ENTRA_CLIENT_SECRET
+      #   clientSecretKey: entraClientSecret
+      #   allowedGroups: ["<group-object-id>"]  # Entra emits group object IDs
 
 # Agent: per-node probe DaemonSet on hostNetwork.
 agent:

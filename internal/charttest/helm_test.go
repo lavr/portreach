@@ -70,6 +70,24 @@ ui:
         clientSecretEnv: GITLAB_CLIENT_SECRET
         clientSecretKey: gitlabClientSecret
         allowedGroups: [infra, sre]
+      - id: keycloak
+        type: oidc
+        displayName: "Corporate SSO"
+        issuer: https://keycloak.corp/realms/main
+        clientID: kcid
+        clientSecretEnv: OIDC_CLIENT_SECRET
+        clientSecretKey: oidcClientSecret
+        groupsClaim: groups
+        usernameClaim: preferred_username
+        scopes: [openid, profile, email]
+        allowedGroups: [sre, infra]
+      - id: google
+        type: google
+        displayName: "Google"
+        clientID: ggid
+        clientSecretEnv: GOOGLE_CLIENT_SECRET
+        clientSecretKey: googleClientSecret
+        hostedDomain: corp.com
 `
 
 func TestChartAuthOn(t *testing.T) {
@@ -87,6 +105,10 @@ func TestChartAuthOn(t *testing.T) {
 		"key: githubClientSecret",
 		"name: GITLAB_CLIENT_SECRET",
 		"key: gitlabClientSecret",
+		"name: OIDC_CLIENT_SECRET",
+		"key: oidcClientSecret",
+		"name: GOOGLE_CLIENT_SECRET",
+		"key: googleClientSecret",
 		"mountPath: /etc/portreach/auth",
 		"configMap:",
 	} {
@@ -100,10 +122,18 @@ func TestChartAuthOn(t *testing.T) {
 		"cookieKey: ${PORTREACH_AUTH_COOKIE_KEY}",
 		"clientSecret: ${GITHUB_CLIENT_SECRET}",
 		"clientSecret: ${GITLAB_CLIENT_SECRET}",
+		"clientSecret: ${OIDC_CLIENT_SECRET}",
+		"clientSecret: ${GOOGLE_CLIENT_SECRET}",
 		"id: github",
 		"id: corp-gitlab",
 		"displayName: Corporate GitLab",
 		"baseURL: https://gitlab.corp",
+		"id: keycloak",
+		"issuer: https://keycloak.corp/realms/main",
+		"groupsClaim: groups",
+		"usernameClaim: preferred_username",
+		"id: google",
+		"hostedDomain: corp.com",
 	} {
 		if !strings.Contains(cm, want) {
 			t.Errorf("configmap missing %q\n---\n%s", want, cm)
@@ -134,6 +164,8 @@ func TestChartConfigRoundTrips(t *testing.T) {
 	t.Setenv("PORTREACH_AUTH_COOKIE_KEY", strings.Repeat("a", 64)) // 32 bytes hex
 	t.Setenv("GITHUB_CLIENT_SECRET", "gh-secret")
 	t.Setenv("GITLAB_CLIENT_SECRET", "gl-secret")
+	t.Setenv("OIDC_CLIENT_SECRET", "oidc-secret")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "google-secret")
 
 	f := filepath.Join(t.TempDir(), "auth.yaml")
 	if err := os.WriteFile(f, []byte(authYAML), 0o600); err != nil {
@@ -149,8 +181,8 @@ func TestChartConfigRoundTrips(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("rendered config failed Validate: %v", err)
 	}
-	if len(cfg.Providers) != 2 {
-		t.Fatalf("want 2 providers, got %d", len(cfg.Providers))
+	if len(cfg.Providers) != 4 {
+		t.Fatalf("want 4 providers, got %d", len(cfg.Providers))
 	}
 }
 

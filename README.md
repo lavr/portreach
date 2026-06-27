@@ -151,8 +151,10 @@ A denied target resolves to HTTP 403. See
 ## Authentication (optional SSO)
 
 The UI can be put behind corporate single sign-on, with **multiple providers at
-once** — GitHub (github.com / Enterprise) and GitLab (gitlab.com / self-hosted).
-It is **disabled by default**: with no config the UI runs exactly as before.
+once** — GitHub (github.com / Enterprise) plus **any OpenID Connect IdP** via a
+generic `oidc` type or a named preset: Keycloak, Okta, Auth0, Entra ID (Azure
+AD), Google Workspace and GitLab (gitlab.com / self-hosted). It is **disabled by
+default**: with no config the UI runs exactly as before.
 
 Point `--auth-config` (or `PORTREACH_AUTH_CONFIG`) at a YAML file listing your
 providers and an `allowedUsers`/per-provider org/group allowlist. The login page

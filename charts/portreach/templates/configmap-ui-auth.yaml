@@ -18,6 +18,11 @@
   {{- with .baseURL }}{{- $_ := set $p "baseURL" . -}}{{- end -}}
   {{- with .allowedOrgs }}{{- $_ := set $p "allowedOrgs" . -}}{{- end -}}
   {{- with .allowedGroups }}{{- $_ := set $p "allowedGroups" . -}}{{- end -}}
+  {{- with .issuer }}{{- $_ := set $p "issuer" . -}}{{- end -}}
+  {{- with .scopes }}{{- $_ := set $p "scopes" . -}}{{- end -}}
+  {{- with .usernameClaim }}{{- $_ := set $p "usernameClaim" . -}}{{- end -}}
+  {{- with .groupsClaim }}{{- $_ := set $p "groupsClaim" . -}}{{- end -}}
+  {{- with .hostedDomain }}{{- $_ := set $p "hostedDomain" . -}}{{- end -}}
   {{- $providers = append $providers $p -}}
 {{- end -}}
 {{- $_ := set $auth "providers" $providers -}}

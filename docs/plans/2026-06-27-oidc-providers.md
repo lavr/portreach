@@ -105,17 +105,17 @@
 - [x] run tests — must pass before Task 5
 
 ### Task 5: Helm + docs
-- [ ] `charts/portreach/values.yaml`: document the new provider `type`s and OIDC
+- [x] `charts/portreach/values.yaml`: document the new provider `type`s and OIDC
       fields (`issuer`, `scopes`, `usernameClaim`, `groupsClaim`, `hostedDomain`)
       in the `ui.auth.providers` examples
-- [ ] `docs/configuration.md`: generic OIDC reference + a short setup snippet per
+- [x] `docs/configuration.md`: generic OIDC reference + a short setup snippet per
       IdP (Keycloak, Okta, Auth0, Entra ID, Google), claim-mapping notes, Google
       `hd` and Entra group-claim caveats
-- [ ] `README.md`: update the auth section to say "GitHub + any OIDC IdP
+- [x] `README.md`: update the auth section to say "GitHub + any OIDC IdP
       (Keycloak, Okta, Auth0, Entra ID, Google, GitLab)"
-- [ ] extend the helm render assertion with an `oidc`/`google` provider example;
+- [x] extend the helm render assertion with an `oidc`/`google` provider example;
       run `helm lint`
-- [ ] run `go test ./...` — no regression
+- [x] run `go test ./...` — no regression
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify generic `oidc` works end-to-end against a fake issuer; each preset

@@ -117,10 +117,27 @@ from DNS.
 ## Authentication (optional SSO)
 
 The UI can be put behind corporate single sign-on with **multiple providers at
-once** — GitHub (github.com / GitHub Enterprise) and GitLab (gitlab.com /
-self-hosted). It is **disabled by default**: with no config (or a config with no
-providers) the UI behaves exactly as before — no login, fully backward
-compatible.
+once** — GitHub (github.com / GitHub Enterprise) plus **any standards-compliant
+OpenID Connect IdP**, either through the generic `oidc` type or a named preset
+(`gitlab`, `google`, `entra`, `okta`, `keycloak`). It is **disabled by default**:
+with no config (or a config with no providers) the UI behaves exactly as before —
+no login, fully backward compatible.
+
+Provider `type`s:
+
+| `type` | Protocol | Notes |
+| --- | --- | --- |
+| `github` | OAuth2 + REST | github.com / Enterprise; orgs via `/user/orgs`. No OIDC login. |
+| `oidc` | OpenID Connect | Generic — set `issuer`; works with Keycloak, Authentik, Dex, Zitadel, Okta, Auth0, Entra, Google, … |
+| `gitlab` | OIDC preset | Issuer `baseURL` or `https://gitlab.com`; groups claim `groups`. |
+| `google` | OIDC preset | Issuer `https://accounts.google.com`; username claim `email`; optional `hostedDomain`. |
+| `entra` | OIDC preset | Issuer `https://login.microsoftonline.com/<tenant>/v2.0` from `baseURL`. |
+| `okta` | OIDC preset | Issuer = `baseURL` (org issuer URL). |
+| `keycloak` | OIDC preset | Issuer = `baseURL` (realm issuer URL). |
+
+A **preset is just defaults** (issuer template, scopes, claim mapping, display
+name) layered over the generic `oidc` provider; any explicit field below
+overrides the preset.
 
 Enable it by pointing `--auth-config` (or `PORTREACH_AUTH_CONFIG`) at a YAML
 file:
@@ -136,7 +153,7 @@ auth:
   allowedUsers: []
   providers:
     - id: corp-gitlab            # unique, non-empty; used in the callback URL
-      type: gitlab               # github | gitlab
+      type: gitlab               # github | oidc | gitlab|google|entra|okta|keycloak
       displayName: "Corporate GitLab"   # optional; button label, defaults per type
       baseURL: https://gitlab.corp      # optional; self-hosted/Enterprise base
       clientID: abc
@@ -218,6 +235,80 @@ self-hosted or GitHub Enterprise, set it to the corporate base:
 - GitLab self-hosted → OIDC issuer is `<base>` (discovery at
   `<base>/.well-known/openid-configuration`). Scopes: `openid profile email`.
 
+### Generic OIDC (`type: oidc`) and presets
+
+The `oidc` type works with any standards-compliant OpenID Connect IdP. It
+discovers endpoints from the `issuer` (`<issuer>/.well-known/openid-configuration`),
+verifies the `id_token` (signature + nonce) and maps claims to a portreach
+identity. OIDC fields (all optional except `issuer` for `type: oidc`):
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `issuer` | — (required for `oidc`) | Discovery base URL. Presets derive it from `baseURL`/built-in. |
+| `scopes` | `[openid, profile, email]` | OAuth2 scopes requested. |
+| `usernameClaim` | `preferred_username`, then `sub` | id_token claim → login. |
+| `groupsClaim` | `groups` | id_token claim → groups (matched against `allowedGroups`). |
+| `hostedDomain` | — | Google Workspace `hd` restriction (see Google below). |
+
+The named presets set those defaults so a minimal config is enough:
+
+```yaml
+providers:
+  # Generic OIDC — Keycloak, Authentik, Dex, Zitadel, Auth0, …
+  - id: keycloak
+    type: oidc
+    displayName: "Corporate SSO"
+    issuer: https://keycloak.corp/realms/main
+    clientID: portreach
+    clientSecret: ${OIDC_SECRET}
+    groupsClaim: groups          # already the default; override if your IdP differs
+    allowedGroups: [sre, infra]
+
+  # Okta / Keycloak presets: issuer = baseURL
+  - id: okta
+    type: okta
+    baseURL: https://acme.okta.com   # your Okta org issuer URL
+    clientID: ${OKTA_CLIENT_ID}
+    clientSecret: ${OKTA_SECRET}
+    allowedGroups: [engineering]
+
+  # Entra ID (Azure AD): issuer = login.microsoftonline.com/<tenant>/v2.0
+  - id: entra
+    type: entra
+    baseURL: <tenant-id>          # tenant id, or a full issuer URL
+    clientID: ${ENTRA_CLIENT_ID}
+    clientSecret: ${ENTRA_SECRET}
+    allowedGroups: ["<group-object-id>"]
+
+  # Google Workspace
+  - id: google
+    type: google
+    clientID: ${GOOGLE_CLIENT_ID}
+    clientSecret: ${GOOGLE_SECRET}
+    hostedDomain: corp.com        # only this Workspace domain may sign in
+```
+
+**Per-IdP setup notes**
+
+- **Keycloak / Authentik / Dex / Zitadel** — use `type: oidc` with the realm/
+  application issuer URL. Add a *groups* mapper to the ID token so the `groups`
+  claim is emitted, then list realm/group names in `allowedGroups`.
+- **Okta** — `type: okta`, `baseURL` = your org issuer (`https://<org>.okta.com`,
+  or a custom authorization-server issuer). Add a `groups` claim to the ID token.
+- **Auth0** — `type: oidc`, `issuer: https://<tenant>.auth0.com/`. Auth0 does not
+  emit `groups` by default; add a custom claim via an Action/Rule and point
+  `groupsClaim` at it.
+- **Entra ID (Azure AD)** — `type: entra`, `baseURL` = your **tenant id** (the
+  issuer becomes `https://login.microsoftonline.com/<tenant>/v2.0`). Entra's
+  `groups` claim carries **group *object IDs***, not names — list those GUIDs in
+  `allowedGroups`. The app registration must be configured to **emit the groups
+  claim** (Token configuration → Add groups claim), or no groups arrive.
+- **Google Workspace** — `type: google`. Google issues **no group claim**, so
+  gate access with `hostedDomain` and/or the global `allowedUsers` (emails); the
+  username claim is `email`. `hostedDomain` (`hd`) is sent on the auth request and
+  re-verified against the `hd` claim on callback — a user from another domain is
+  rejected with `403`. `allowedGroups` has no effect for Google.
+
 ### Registering the OAuth apps
 
 - **GitHub**: `Settings → Developer settings → OAuth Apps → New`. Set the
@@ -225,6 +316,10 @@ self-hosted or GitHub Enterprise, set it to the corporate base:
 - **GitLab**: `Preferences → Applications` (or group/instance application). Set
   the *Redirect URI* to your `redirectURL`, scopes `openid profile email`, and
   copy the application ID (clientID) + secret.
+- **OIDC IdPs (Keycloak, Okta, Auth0, Entra, Google, …)**: register a *Web /
+  confidential* OAuth client, set the *Redirect URI* to your `redirectURL`,
+  request scopes `openid profile email`, and copy the client ID + secret. See the
+  per-IdP setup notes above for issuer/claim specifics.
 
 The callback is the single `redirectURL` for all providers; the active provider
 is recovered from the sealed state cookie, so you do not register a per-provider
