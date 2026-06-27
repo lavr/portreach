@@ -1,8 +1,10 @@
 image:
   repository: lavr/portreach
-  # Defaults to <appVersion>-rootless (scratch-based, distroless image).
-  # To use the alpine-based image instead, set tag without the -rootless suffix:
-  #   image.tag: "0.1.0"
+  # Single source of truth for the image tag.
+  #   empty => defaults to the chart appVersion (plain alpine-based image);
+  #   set   => used verbatim (e.g. "0.1.0", "sha-abc123", "latest").
+  # The scratch-based distroless (rootless) image is opt-in:
+  #   image.tag: "0.1.0-rootless"
   tag: ""
   pullPolicy: IfNotPresent
 

@@ -118,18 +118,19 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
 - [x] run `go build ./... && go test ./...` (regression guard)
 
 ### Task 2: Single-variable image tag helper + values
-- [ ] `_helpers.tpl`: drop the suffix magic in `portreach.image` — default to
+- [x] `_helpers.tpl`: drop the suffix magic in `portreach.image` — default to
       `.Chart.AppVersion`:
       ```gotemplate
       {{- define "portreach.image" -}}
       {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
       {{- end }}
       ```
-- [ ] `values.yaml`: rewrite the `image.tag` comment — empty → `appVersion`
+- [x] `values.yaml`: rewrite the `image.tag` comment — empty → `appVersion`
       (plain); set the full tag to override (incl. `-rootless` for the scratch image)
-- [ ] verify with `helm template`: default → `:<appVersion>`; override → verbatim;
+- [x] verify with `helm template`: default → `:<appVersion>`; override → verbatim;
       both UI Deployment and agent DaemonSet render the same image
-- [ ] run `go build ./... && go test ./...` (regression guard)
+      (added `TestChartImage` in `internal/charttest`)
+- [x] run `go build ./... && go test ./...` (regression guard)
 
 ### Task 3: Choose and lock the default discovery mode (live)
 - [ ] live-verify `relative` (`<svc>.<ns>.svc`) with the **Go** UI on a

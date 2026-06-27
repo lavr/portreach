@@ -202,6 +202,73 @@ func TestChartAuthOff(t *testing.T) {
 	}
 }
 
+// chartAppVersion reads appVersion from Chart.yaml so the image assertions track
+// the chart instead of hard-coding a version.
+func chartAppVersion(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(chartDir, "Chart.yaml"))
+	if err != nil {
+		t.Fatalf("read Chart.yaml: %v", err)
+	}
+	var doc struct {
+		AppVersion string `yaml:"appVersion"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("parse Chart.yaml: %v", err)
+	}
+	if doc.AppVersion == "" {
+		t.Fatal("Chart.yaml has no appVersion")
+	}
+	return doc.AppVersion
+}
+
+// imageRefs extracts every `image: "..."` value from a rendered manifest.
+func imageRefs(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "image:"); ok {
+			out = append(out, strings.Trim(strings.TrimSpace(v), `"`))
+		}
+	}
+	return out
+}
+
+// TestChartImage asserts image.tag is the single source of truth: empty defaults
+// to the plain appVersion (no -rootless suffix) and any explicit tag is used
+// verbatim, with the UI Deployment and agent DaemonSet always sharing one image.
+func TestChartImage(t *testing.T) {
+	requireHelm(t)
+	appVersion := chartAppVersion(t)
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default-appVersion-no-rootless", nil, "lavr/portreach:" + appVersion},
+		{"rootless-opt-in-verbatim", []string{"--set", "image.tag=" + appVersion + "-rootless"}, "lavr/portreach:" + appVersion + "-rootless"},
+		{"sha-tag-verbatim", []string{"--set", "image.tag=sha-abc123"}, "lavr/portreach:sha-abc123"},
+		{"custom-repository", []string{"--set", "image.repository=ghcr.io/me/portreach"}, "ghcr.io/me/portreach:" + appVersion},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ui := imageRefs(helmTemplate(t, append([]string{"--show-only", "templates/deployment-ui.yaml"}, tc.args...)...))
+			ds := imageRefs(helmTemplate(t, append([]string{"--show-only", "templates/daemonset-agent.yaml"}, tc.args...)...))
+			for label, got := range map[string][]string{"deployment-ui": ui, "daemonset-agent": ds} {
+				if len(got) == 0 {
+					t.Fatalf("%s: no image reference rendered", label)
+				}
+				for _, ref := range got {
+					if ref != tc.want {
+						t.Errorf("%s: image = %q, want %q", label, ref, tc.want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestChartLint(t *testing.T) {
 	requireHelm(t)
 	vals := writeValues(t, authOnValues)

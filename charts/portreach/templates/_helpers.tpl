@@ -99,10 +99,13 @@ Priority chain (portable by default):
 {{- end }}
 
 {{/*
-The image tag, defaulting to <appVersion>-rootless.
+The image reference. image.tag is the single source of truth:
+  set   -> used verbatim (0.1.0, 0.1.0-rootless, sha-abc123, latest, ...);
+  empty -> defaults to .Chart.AppVersion (plain, no -rootless suffix).
+Shared by the UI Deployment and agent DaemonSet so they never drift.
 */}}
 {{- define "portreach.image" -}}
-{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default (printf "%s-rootless" .Chart.AppVersion)) }}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
 {{- end }}
 
 {{/*
