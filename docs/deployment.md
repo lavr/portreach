@@ -60,6 +60,56 @@ helm lint charts/portreach
 See [`charts/portreach/README.md`](../charts/portreach/README.md) for the full
 values reference.
 
+### Authentication (optional SSO)
+
+The chart can put the UI behind SSO via `ui.auth` — disabled by default. When
+enabled it renders the auth config into a ConfigMap, mounts it at
+`/etc/portreach/auth/auth.yaml`, passes `--auth-config`, and injects the cookie
+key + each provider's client secret from a Kubernetes Secret as env vars (the
+config references them as `${ENV}`, so secrets never land in the ConfigMap).
+
+Create the Secret out-of-band (cookie key + one client secret per provider):
+
+```sh
+kubectl create secret generic portreach-ui-auth \
+  --from-literal=cookieKey="$(openssl rand -hex 32)" \
+  --from-literal=githubClientSecret=... \
+  --from-literal=gitlabClientSecret=...
+```
+
+Then enable two providers in `values.yaml`:
+
+```yaml
+ui:
+  auth:
+    enabled: true
+    redirectURL: https://portreach.corp/auth/callback
+    allowedUsers: []                 # empty = any authenticated user
+    existingSecret: portreach-ui-auth   # defaults to <ui-fullname>-auth
+    cookieKeyEnv: PORTREACH_AUTH_COOKIE_KEY
+    cookieKeySecretKey: cookieKey
+    providers:
+      - id: github
+        type: github
+        displayName: GitHub
+        clientID: "abc"
+        clientSecretEnv: GITHUB_CLIENT_SECRET
+        clientSecretKey: githubClientSecret   # key within existingSecret
+        allowedOrgs: [myorg]
+      - id: corp-gitlab
+        type: gitlab
+        displayName: "Corporate GitLab"
+        baseURL: https://gitlab.corp
+        clientID: "def"
+        clientSecretEnv: GITLAB_CLIENT_SECRET
+        clientSecretKey: gitlabClientSecret
+        allowedGroups: [infra, sre]
+```
+
+`/healthz` stays public so the liveness/readiness probes keep working. Terminate
+TLS at the ingress so the `Secure` session cookie is sent. See the auth-config
+reference in [`configuration.md`](configuration.md#authentication-optional-sso).
+
 ## Docker / static list
 
 Run agents with host networking so the probe egress is the host's real IP, and

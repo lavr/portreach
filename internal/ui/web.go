@@ -2,10 +2,13 @@ package ui
 
 import (
 	_ "embed"
+	"errors"
 	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/lavr/portreach/internal/i18n"
 )
 
 //go:embed web/index.html
@@ -14,8 +17,12 @@ var indexHTML string
 var indexTmpl = template.Must(template.New("index").Parse(indexHTML))
 
 // pageData drives the server-rendered form page. The form fields echo the raw
-// user input so a submitted form re-renders with its values preserved.
+// user input so a submitted form re-renders with its values preserved. L is the
+// request's localizer; the template pulls every visible string through it and
+// Lang feeds the <html lang> attribute.
 type pageData struct {
+	L         *i18n.Localizer
+	Lang      string
 	Host      string
 	Port      string
 	Proto     string
@@ -33,8 +40,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	loc := i18n.FromRequest(r)
 	q := r.URL.Query()
 	data := pageData{
+		L:       loc,
+		Lang:    loc.Lang(),
 		Host:    strings.TrimSpace(q.Get("host")),
 		Port:    strings.TrimSpace(q.Get("port")),
 		Proto:   q.Get("proto"),
@@ -51,7 +61,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		target, err := parseTarget(q)
 		switch {
 		case data.Host == "":
-			data.Error = "host is required"
+			data.Error = loc.T("error.host_required")
+		case errors.Is(err, errBadPort):
+			data.Error = loc.T("error.bad_port")
+		case errors.Is(err, errBadTimeout):
+			data.Error = loc.T("error.bad_timeout")
 		case err != nil:
 			data.Error = err.Error()
 		default:

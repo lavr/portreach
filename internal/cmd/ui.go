@@ -3,11 +3,15 @@ package cmd
 import (
 	"errors"
 	"flag"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/lavr/portreach/internal/auth"
 	"github.com/lavr/portreach/internal/discovery"
 	"github.com/lavr/portreach/internal/ui"
 )
@@ -20,6 +24,7 @@ func runUI(args []string, deps Deps) error {
 	agentsDNS := fs.String("agents-dns", os.Getenv("PORTREACH_AGENTS_DNS"), "headless service name to resolve agents from (env PORTREACH_AGENTS_DNS)")
 	agentPort := fs.Int("agent-port", envInt("PORTREACH_AGENT_PORT", 8732), "agent port for DNS-discovered and port-less agents (env PORTREACH_AGENT_PORT)")
 	timeout := fs.Duration("timeout", 8*time.Second, "overall fan-out budget per check")
+	authConfig := fs.String("auth-config", os.Getenv("PORTREACH_AUTH_CONFIG"), "path to SSO auth config YAML; empty = auth disabled (env PORTREACH_AUTH_CONFIG)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // -h/--help: flag already printed usage, exit cleanly
@@ -32,12 +37,61 @@ func runUI(args []string, deps Deps) error {
 		return &ExitError{Code: 2, Err: err}
 	}
 
+	handler, err := buildUIHandler(disc, *timeout, *authConfig, deps.Stdout)
+	if err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           ui.New(disc, *timeout).Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second, // bound slow-header (Slowloris) clients
 	}
 	return serveWithShutdown(srv, deps)
+}
+
+// buildUIHandler assembles the UI HTTP handler, wrapping it in the SSO auth
+// middleware when an auth config is supplied and enabled. Auth is disabled by
+// default: an empty path or a provider-less config yields the raw,
+// unauthenticated UI (backward compatible). A malformed or invalid enabled
+// config returns an error so runUI can fail fast with exit code 2.
+func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath string, out io.Writer) (http.Handler, error) {
+	// Audit events go to stdout as JSON for the ИБ log pipeline (ELK/Loki).
+	logger := slog.New(slog.NewJSONHandler(out, nil))
+	handler := ui.New(disc, timeout).Handler()
+	// Audit every reachability check, attributing it to the authenticated user
+	// (or anonymous when auth is off, since no identity reaches the context).
+	audited := auth.AuditCheck(logger, handler)
+
+	if authConfigPath == "" {
+		return audited, nil
+	}
+
+	cfg, err := auth.LoadConfig(authConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Enabled() {
+		// A config file with no providers is valid and leaves the UI open.
+		return audited, nil
+	}
+
+	authn, err := auth.New(cfg, auth.WithLogger(logger))
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		ids = append(ids, p.ID)
+	}
+	// Emit the startup banner through the same JSON logger so it does not
+	// interleave a plain-text line into the audit log pipeline on stdout.
+	logger.Info("ui: SSO auth enabled", slog.String("providers", strings.Join(ids, ", ")))
+
+	// Gate first (injecting Identity into the context), then audit so the
+	// check events carry the authenticated user.
+	return authn.Middleware(audited), nil
 }
 
 // envInt returns the integer value of env var name, or def when unset/invalid.

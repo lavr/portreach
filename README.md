@@ -133,6 +133,7 @@ the hostname.
 | `--agents-dns` | `PORTREACH_AGENTS_DNS` | | headless service name to resolve agents from |
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | port for DNS-discovered / port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
+| `--auth-config` | `PORTREACH_AUTH_CONFIG` | | SSO auth config YAML; empty = auth disabled |
 
 Use `--agents` **or** `--agents-dns`, not both. Full reference:
 [`docs/configuration.md`](docs/configuration.md).
@@ -147,6 +148,32 @@ The agent makes outbound TCP connections on request — an SSRF vector. Mitigate
 A denied target resolves to HTTP 403. See
 [`docs/configuration.md`](docs/configuration.md) for details.
 
+## Authentication (optional SSO)
+
+The UI can be put behind corporate single sign-on, with **multiple providers at
+once** — GitHub (github.com / Enterprise) plus **any OpenID Connect IdP** via a
+generic `oidc` type or a named preset: Keycloak, Okta, Auth0, Entra ID (Azure
+AD), Google Workspace and GitLab (gitlab.com / self-hosted). It is **disabled by
+default**: with no config the UI runs exactly as before.
+
+Point `--auth-config` (or `PORTREACH_AUTH_CONFIG`) at a YAML file listing your
+providers and an `allowedUsers`/per-provider org/group allowlist. The login page
+always shows one button per provider; the session lives in a sealed
+(AES-256-GCM) cookie. `/healthz` stays public; `/` and `/api/check` are gated.
+
+Every login and reachability check is emitted as a structured `log/slog` JSON
+audit event on stdout (`who` ran `what` from `where`) for security pipelines;
+with auth off the actor is `anonymous`. Full reference, OAuth-app setup and the
+audit event format: [`docs/configuration.md`](docs/configuration.md#authentication-optional-sso).
+
+## Localization
+
+The UI (form, results and auth pages) is localized from the browser's
+`Accept-Language` header, defaulting to English. **en** and **ru** ship in the
+box; add a locale by dropping `internal/i18n/locales/<lang>.json` and
+registering its tag — see
+[`docs/configuration.md`](docs/configuration.md#localization-i18n).
+
 ## Build
 
 ```sh
@@ -155,7 +182,9 @@ make test            # go test ./...
 make docker-build    # docker image (alpine variant; the rootless image is built by CI)
 ```
 
-Only the Go standard library is used — no third-party dependencies.
+The core probe/UI is standard-library only; the optional SSO auth + i18n layer
+adds a small set of well-known deps (`golang.org/x/oauth2`,
+`github.com/coreos/go-oidc/v3`, `golang.org/x/text`, `gopkg.in/yaml.v3`).
 
 ## License
 

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="{{.Lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: system-ui, sans-serif; margin: 4rem auto; max-width: 24rem; padding: 0 1rem; text-align: center; }
+h1 { font-size: 1.4rem; margin-bottom: 1.5rem; }
+.providers { display: flex; flex-direction: column; gap: .75rem; }
+a.btn { display: block; padding: .6rem 1rem; font-size: 1rem; border: 1px solid #8886; border-radius: .4rem; text-decoration: none; color: inherit; background: #8881; }
+a.btn:hover { background: #8882; }
+</style>
+</head>
+<body>
+<h1>{{.Heading}}</h1>
+<div class="providers">
+{{range .Buttons}}
+  <a class="btn" href="{{.URL}}">{{.Label}}</a>
+{{end}}
+</div>
+</body>
+</html>
