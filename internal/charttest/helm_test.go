@@ -269,6 +269,54 @@ func TestChartImage(t *testing.T) {
 	}
 }
 
+// agentsDNS extracts the PORTREACH_AGENTS_DNS env value from a rendered UI
+// Deployment. The env block renders the name on one line and its value on the
+// next, so we scan for the name line and read the following value line.
+func agentsDNS(t *testing.T, s string) string {
+	t.Helper()
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "name: PORTREACH_AGENTS_DNS") && i+1 < len(lines) {
+			v := strings.TrimSpace(lines[i+1])
+			v = strings.TrimPrefix(v, "value:")
+			return strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	t.Fatalf("PORTREACH_AGENTS_DNS not found in render\n%s", s)
+	return ""
+}
+
+// TestChartDiscoveryDNS asserts the agent-discovery name priority chain:
+// ui.agentsDnsName override wins verbatim; otherwise ui.discovery.mode picks
+// between relative (default), fqdn (uses clusterDomain) and bare. The namespace
+// is substituted from --namespace, and relative is independent of clusterDomain.
+func TestChartDiscoveryDNS(t *testing.T) {
+	requireHelm(t)
+	const svc = "rel-portreach-agent"
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default-relative", []string{"--namespace", "demo"}, svc + ".demo.svc"},
+		{"relative-ignores-clusterDomain", []string{"--namespace", "demo", "--set", "clusterDomain=example.com"}, svc + ".demo.svc"},
+		{"fqdn-uses-clusterDomain", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn", "--set", "clusterDomain=example.com"}, svc + ".demo.svc.example.com"},
+		{"fqdn-default-cluster-local", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn"}, svc + ".demo.svc.cluster.local"},
+		{"bare", []string{"--namespace", "demo", "--set", "ui.discovery.mode=bare"}, svc},
+		{"override-wins", []string{"--namespace", "demo", "--set", "ui.discovery.mode=fqdn", "--set", "ui.agentsDnsName=foo.bar"}, "foo.bar"},
+		{"namespace-substitution", []string{"--namespace", "other-ns"}, svc + ".other-ns.svc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := helmTemplate(t, append([]string{"--show-only", "templates/deployment-ui.yaml"}, tc.args...)...)
+			if got := agentsDNS(t, out); got != tc.want {
+				t.Errorf("PORTREACH_AGENTS_DNS = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestChartLint(t *testing.T) {
 	requireHelm(t)
 	vals := writeValues(t, authOnValues)

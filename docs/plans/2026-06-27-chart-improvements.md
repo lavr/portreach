@@ -163,10 +163,17 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
       image→`lavr/portreach:0.1.0` on both workloads)
 
 ### Task 5: Verify acceptance criteria + version bump
-- [ ] all discovery + image render cases pass; `helm lint` clean
-- [ ] default discovery resolves on both `cluster.local` and a custom-domain cluster
-- [ ] `go build/vet/test` green
-- [ ] bump chart `version` to `0.1.1` in `charts/portreach/Chart.yaml`
+- [x] all discovery + image render cases pass; `helm lint` clean
+      (added `TestChartDiscoveryDNS` covering the 4 strategy cases — relative
+      default, fqdn+clusterDomain, bare, override-wins, plus namespace
+      substitution; `TestChartImage` and `TestChartLint` green)
+- [x] default discovery resolves on both `cluster.local` and a custom-domain
+      cluster (static render verified: `relative` emits `<svc>.<ns>.svc`
+      independent of `clusterDomain`, so it resolves under any cluster domain
+      via the pod search suffix; live DNS resolution — skipped, not automatable,
+      Go-resolver evidence recorded in Context/Technical Details)
+- [x] `go build/vet/test` green
+- [x] bump chart `version` to `0.1.1` in `charts/portreach/Chart.yaml`
 
 ## Technical Details
 - Go `with ... else` honours the empty-string default of `ui.agentsDnsName`
