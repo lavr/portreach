@@ -1,6 +1,6 @@
 services:
   agent1:
-    image: lavr/portreach
+    image: ghcr.io/lavr/portreach
     command: ["agent", "--listen", ":8732"]
     environment:
       NODE_NAME: agent1
@@ -8,7 +8,7 @@ services:
       - "8732"
 
   agent2:
-    image: lavr/portreach
+    image: ghcr.io/lavr/portreach
     command: ["agent", "--listen", ":8732"]
     environment:
       NODE_NAME: agent2
@@ -16,7 +16,7 @@ services:
       - "8732"
 
   ui:
-    image: lavr/portreach
+    image: ghcr.io/lavr/portreach
     command: ["ui", "--listen", ":8080"]
     environment:
       PORTREACH_AGENTS: agent1:8732,agent2:8732
