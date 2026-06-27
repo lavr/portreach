@@ -264,6 +264,48 @@ func TestOIDCExchangeCustomClaims(t *testing.T) {
 	}
 }
 
+func TestOIDCExchangeRejectsUnverifiedEmail(t *testing.T) {
+	// When the username is the email claim, an explicit email_verified:false
+	// must be rejected so an attacker-asserted email cannot match AllowedUsers.
+	for _, ev := range []any{false, "false"} {
+		p, _ := newTestOIDC(t, ProviderConfig{UsernameClaim: "email"},
+			func(string) map[string]any {
+				return map[string]any{
+					"sub":            "42",
+					"email":          "victim@corp.com",
+					"email_verified": ev,
+					"nonce":          "n1",
+				}
+			})
+
+		if _, err := p.Exchange(context.Background(), "code", "n1"); err == nil {
+			t.Fatalf("email_verified=%v: expected rejection, got nil", ev)
+		} else if !strings.Contains(err.Error(), "not verified") {
+			t.Errorf("email_verified=%v: error = %v, want not-verified", ev, err)
+		}
+	}
+}
+
+func TestOIDCExchangeAcceptsVerifiedEmail(t *testing.T) {
+	// email_verified:true, and the absence of the claim, both pass.
+	for _, claims := range []map[string]any{
+		{"sub": "42", "email": "ok@corp.com", "email_verified": true, "nonce": "n1"},
+		{"sub": "42", "email": "ok@corp.com", "nonce": "n1"}, // omitted -> tolerated
+	} {
+		c := claims
+		p, _ := newTestOIDC(t, ProviderConfig{UsernameClaim: "email"},
+			func(string) map[string]any { return c })
+
+		id, err := p.Exchange(context.Background(), "code", "n1")
+		if err != nil {
+			t.Fatalf("claims=%v: Exchange: %v", c, err)
+		}
+		if id.Login != "ok@corp.com" {
+			t.Errorf("claims=%v: Login = %q, want ok@corp.com", c, id.Login)
+		}
+	}
+}
+
 func TestOIDCExchangeStringGroupsClaim(t *testing.T) {
 	// Some IdPs emit a single group as a bare string rather than an array.
 	p, _ := newTestOIDC(t, ProviderConfig{}, func(string) map[string]any {

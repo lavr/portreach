@@ -140,6 +140,17 @@ func (p *oidcProvider) Exchange(ctx context.Context, code, nonce string) (Identi
 	}
 
 	login := claimString(claims, p.usernameClaim)
+	// When the identity is sourced from the email claim, require the IdP to have
+	// verified that email. An unverified, self-asserted email is attacker
+	// controllable and must not be usable as the access-control identity
+	// (it is matched verbatim against AllowedUsers). Only an explicit
+	// email_verified:false is rejected; absence is tolerated since the claim is
+	// optional in OIDC and many issuers omit it.
+	if login != "" && p.usernameClaim == "email" {
+		if verified, ok := claimBool(claims, "email_verified"); ok && !verified {
+			return Identity{}, fmt.Errorf("auth: oidc email %q is not verified", login)
+		}
+	}
 	if login == "" {
 		login = claimString(claims, "sub")
 	}
@@ -166,6 +177,24 @@ func claimString(claims map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+// claimBool returns the boolean value of claim key. ok is false when the claim
+// is absent or not a recognizable boolean. Some IdPs encode booleans (notably
+// email_verified) as the strings "true"/"false", so both forms are accepted.
+func claimBool(claims map[string]any, key string) (val, ok bool) {
+	switch v := claims[key].(type) {
+	case bool:
+		return v, true
+	case string:
+		switch v {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // claimStrings returns claim key as a []string. JSON decoding yields []any, so
