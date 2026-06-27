@@ -1,5 +1,5 @@
 image:
-  repository: lavr/portreach
+  repository: ghcr.io/lavr/portreach
   # Single source of truth for the image tag.
   #   empty => defaults to the chart appVersion (plain alpine-based image);
   #   set   => used verbatim (e.g. "0.1.0", "sha-abc123", "latest").

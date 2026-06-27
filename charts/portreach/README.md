@@ -106,7 +106,7 @@ image:
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `image.repository` | `lavr/portreach` | Image repository. |
+| `image.repository` | `ghcr.io/lavr/portreach` | Image repository. |
 | `image.tag` | `""` | Single source of truth. Empty → `<appVersion>` (plain image); set → used verbatim (`0.1.0`, `sha-abc123`, `latest`, or `<ver>-rootless` for the scratch image). |
 | `clusterDomain` | `cluster.local` | Cluster DNS domain. Used **only** when `ui.discovery.mode: fqdn`; ignored otherwise. |
 | `ui.replicaCount` | `1` | UI replicas. |

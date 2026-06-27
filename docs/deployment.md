@@ -32,7 +32,7 @@ Key `values.yaml` knobs:
 
 ```yaml
 image:
-  repository: lavr/portreach
+  repository: ghcr.io/lavr/portreach
   tag: ""            # empty => <appVersion> (plain image); set verbatim,
                      # e.g. "0.1.0-rootless" for the scratch image (opt-in)
 

@@ -55,12 +55,12 @@ Both variants are built for `linux/amd64` and `linux/arm64`.
 
 ```sh
 # one or more agents
-docker run -d --name pr-agent --network host lavr/portreach agent --listen :8732
+docker run -d --name pr-agent --network host ghcr.io/lavr/portreach agent --listen :8732
 
 # the UI pointed at a static agent list
 docker run -d --name pr-ui -p 8080:8080 \
   -e PORTREACH_AGENTS=127.0.0.1:8732 \
-  lavr/portreach ui --listen :8080
+  ghcr.io/lavr/portreach ui --listen :8080
 ```
 
 Open <http://localhost:8080/> and enter a `host:port`. A full multi-agent

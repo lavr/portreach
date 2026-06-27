@@ -255,9 +255,9 @@ func TestChartImage(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"default-appVersion-no-rootless", nil, "lavr/portreach:" + appVersion},
-		{"rootless-opt-in-verbatim", []string{"--set", "image.tag=" + appVersion + "-rootless"}, "lavr/portreach:" + appVersion + "-rootless"},
-		{"sha-tag-verbatim", []string{"--set", "image.tag=sha-abc123"}, "lavr/portreach:sha-abc123"},
+		{"default-appVersion-no-rootless", nil, "ghcr.io/lavr/portreach:" + appVersion},
+		{"rootless-opt-in-verbatim", []string{"--set", "image.tag=" + appVersion + "-rootless"}, "ghcr.io/lavr/portreach:" + appVersion + "-rootless"},
+		{"sha-tag-verbatim", []string{"--set", "image.tag=sha-abc123"}, "ghcr.io/lavr/portreach:sha-abc123"},
 		{"custom-repository", []string{"--set", "image.repository=ghcr.io/me/portreach"}, "ghcr.io/me/portreach:" + appVersion},
 	}
 	for _, tc := range cases {
