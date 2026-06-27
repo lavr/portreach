@@ -33,13 +33,19 @@ Key `values.yaml` knobs:
 ```yaml
 image:
   repository: lavr/portreach
-  tag: ""            # defaults to <appVersion>-rootless
+  tag: ""            # empty => <appVersion> (plain image); set verbatim,
+                     # e.g. "0.1.0-rootless" for the scratch image (opt-in)
 
 ui:
   replicaCount: 1
   timeout: 8s
+  agentsDnsName: ""  # raw override; empty => built from discovery.mode
+  discovery:
+    mode: relative   # relative | fqdn | bare (see "Agent discovery" below)
   ingress:
     enabled: false   # enable + set hosts to expose externally
+
+# clusterDomain: cluster.local   # used ONLY in discovery.mode: fqdn
 
 agent:
   hostNetwork: true
@@ -59,6 +65,27 @@ helm lint charts/portreach
 
 See [`charts/portreach/README.md`](../charts/portreach/README.md) for the full
 values reference.
+
+### Agent discovery (cluster-domain portability)
+
+The UI resolves the headless agent Service by DNS, via the name the chart puts in
+`PORTREACH_AGENTS_DNS`. The chart builds that name portably so it works on any
+cluster DNS domain — **not just `cluster.local`**:
+
+- `ui.discovery.mode: relative` (**default**) → `<svc>.<ns>.svc`. A 2-dot name is
+  below the pod's `ndots:5`, so the Go resolver appends the cluster search domains
+  and matches under whatever DNS domain the cluster actually uses.
+- `ui.discovery.mode: fqdn` → `<svc>.<ns>.svc.<clusterDomain>`. Pins the domain;
+  set `clusterDomain` to match (the historical behaviour).
+- `ui.discovery.mode: bare` → `<svc>` (same-namespace only).
+- `ui.agentsDnsName: <name>` → used verbatim, overriding the modes above
+  (cross-namespace or external names).
+
+> **Non-`cluster.local` caveat:** an absolute `…svc.cluster.local` resolves to
+> NXDOMAIN on clusters whose domain differs (e.g. `kubeprodone.example.ru`),
+> leaving the UI with zero agents (`/api/check` → 502). The default `relative`
+> mode avoids pinning the domain, so the chart is portable out of the box; reach
+> for `fqdn` + `clusterDomain` only when you need an absolute name.
 
 ### Authentication (optional SSO)
 

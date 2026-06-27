@@ -150,12 +150,17 @@ Two chart-only improvements shipped together as chart **0.1.1** (both touch
       automatable here)
 
 ### Task 4: Docs
-- [ ] `charts/portreach/README.md`: document `ui.agentsDnsName`,
+- [x] `charts/portreach/README.md`: document `ui.agentsDnsName`,
       `ui.discovery.mode`, when to use `fqdn` + `clusterDomain`; and `image.tag` as
       the single override with `-rootless` opt-in (note the default-flavour change)
-- [ ] top-level `docs/` (configuration/deployment): cluster-domain portability +
+      (added Values rows + "Agent discovery (DNS portability)" and "Image tag" sections)
+- [x] top-level `docs/` (configuration/deployment): cluster-domain portability +
       non-`cluster.local` caveat, and the image-tag/default-flavour behaviour
-- [ ] `helm template` smoke after doc edits (no rendering regressions)
+      (deployment.md "Agent discovery" subsection + updated values block;
+      configuration.md Discovery-examples caveat)
+- [x] `helm template` smoke after doc edits (no rendering regressions)
+      (helm lint clean; default→`portreach-agent.demo.svc`, fqdn→`…svc.example.com`,
+      image→`lavr/portreach:0.1.0` on both workloads)
 
 ### Task 5: Verify acceptance criteria + version bump
 - [ ] all discovery + image render cases pass; `helm lint` clean
