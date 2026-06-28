@@ -5,6 +5,7 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -14,23 +15,60 @@ import (
 //go:embed web/index.html
 var indexHTML string
 
-var indexTmpl = template.Must(template.New("index").Parse(indexHTML))
+var (
+	indexTmpl   = template.Must(template.New("index").Parse(indexHTML))
+	htmlTagRe   = regexp.MustCompile(`<[^>]*>`)
+	htmlSpaceRe = regexp.MustCompile(`\s+`)
+)
 
 // pageData drives the server-rendered form page. The form fields echo the raw
 // user input so a submitted form re-renders with its values preserved. L is the
 // request's localizer; the template pulls every visible string through it and
 // Lang feeds the <html lang> attribute.
 type pageData struct {
-	L         *i18n.Localizer
-	Lang      string
-	Host      string
-	Port      string
-	Proto     string
-	Timeout   string
-	Submitted bool
-	Error     string
-	Results   []AgentResult
-	Summary   Summary
+	L           *i18n.Localizer
+	Lang        string
+	DocTitle    string
+	Title       template.HTML
+	ShowTitle   bool
+	Description template.HTML
+	Footer      template.HTML
+	Host        string
+	Port        string
+	Proto       string
+	Timeout     string
+	Submitted   bool
+	Error       string
+	Results     []AgentResult
+	Summary     Summary
+}
+
+func (s *Server) newPageData(loc *i18n.Localizer) pageData {
+	data := pageData{
+		L:           loc,
+		Lang:        loc.Lang(),
+		DocTitle:    loc.T("app.title"),
+		Title:       template.HTML(loc.T("app.heading")),
+		ShowTitle:   true,
+		Description: template.HTML(s.branding.Description),
+		Footer:      template.HTML(s.branding.Footer),
+	}
+	if s.branding.Title != nil {
+		if *s.branding.Title == "" {
+			data.ShowTitle = false
+		} else {
+			data.Title = template.HTML(*s.branding.Title)
+			data.DocTitle = stripHTML(*s.branding.Title)
+			if data.DocTitle == "" {
+				data.DocTitle = loc.T("app.title")
+			}
+		}
+	}
+	return data
+}
+
+func stripHTML(s string) string {
+	return strings.TrimSpace(htmlSpaceRe.ReplaceAllString(htmlTagRe.ReplaceAllString(s, " "), " "))
 }
 
 // handleIndex renders the web form and, when the form is submitted, the
@@ -42,14 +80,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	loc := i18n.FromRequest(r)
 	q := r.URL.Query()
-	data := pageData{
-		L:       loc,
-		Lang:    loc.Lang(),
-		Host:    strings.TrimSpace(q.Get("host")),
-		Port:    strings.TrimSpace(q.Get("port")),
-		Proto:   q.Get("proto"),
-		Timeout: strings.TrimSpace(q.Get("timeout")),
-	}
+	data := s.newPageData(loc)
+	data.Host = strings.TrimSpace(q.Get("host"))
+	data.Port = strings.TrimSpace(q.Get("port"))
+	data.Proto = q.Get("proto")
+	data.Timeout = strings.TrimSpace(q.Get("timeout"))
 	if data.Proto == "" {
 		data.Proto = "tcp"
 	}

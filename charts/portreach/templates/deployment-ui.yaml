@@ -73,6 +73,32 @@ spec:
               value: {{ include "portreach.agent.dnsName" . | quote }}
             - name: PORTREACH_AGENT_PORT
               value: {{ .Values.agent.port | quote }}
+            {{- $branding := .Values.ui.branding | default dict }}
+            {{- if and (hasKey $branding "title") (not (kindIs "invalid" $branding.title)) }}
+            - name: PORTREACH_UI_TITLE
+              value: {{ $branding.title | quote }}
+            {{- end }}
+            {{- if and (hasKey $branding "description") (not (kindIs "invalid" $branding.description)) }}
+            - name: PORTREACH_UI_DESCRIPTION
+              value: {{ $branding.description | quote }}
+            {{- end }}
+            {{- if and (hasKey $branding "footer") (not (kindIs "invalid" $branding.footer)) }}
+            - name: PORTREACH_UI_FOOTER
+              value: {{ $branding.footer | quote }}
+            {{- end }}
+            {{- $loginBranding := .Values.ui.loginBranding | default dict }}
+            {{- if and (hasKey $loginBranding "title") (not (kindIs "invalid" $loginBranding.title)) }}
+            - name: PORTREACH_LOGIN_TITLE
+              value: {{ $loginBranding.title | quote }}
+            {{- end }}
+            {{- if and (hasKey $loginBranding "header") (not (kindIs "invalid" $loginBranding.header)) }}
+            - name: PORTREACH_LOGIN_HEADER
+              value: {{ $loginBranding.header | quote }}
+            {{- end }}
+            {{- if and (hasKey $loginBranding "footer") (not (kindIs "invalid" $loginBranding.footer)) }}
+            - name: PORTREACH_LOGIN_FOOTER
+              value: {{ $loginBranding.footer | quote }}
+            {{- end }}
             {{- if .Values.ui.auth.enabled }}
             {{- $secretName := include "portreach.auth.secretName" . }}
             - name: {{ .Values.ui.auth.cookieKeyEnv }}

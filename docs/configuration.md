@@ -76,6 +76,21 @@ of them, and renders a per-point table.
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | agent port for DNS-discovered and port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | path to the SSO auth config YAML; empty = auth disabled |
+| `--ui-title` | `PORTREACH_UI_TITLE` | localized heading | HTML page heading; explicitly empty suppresses `<h1>` |
+| `--ui-description` | `PORTREACH_UI_DESCRIPTION` | | trusted HTML block under the heading |
+| `--ui-footer` | `PORTREACH_UI_FOOTER` | | trusted HTML footer block |
+| `--login-title` | `PORTREACH_LOGIN_TITLE` | localized login/denied title | HTML browser title for login and denied pages |
+| `--login-header` | `PORTREACH_LOGIN_HEADER` | localized login/denied heading | HTML login/denied heading; explicitly empty suppresses `<h1>` |
+| `--login-footer` | `PORTREACH_LOGIN_FOOTER` | | trusted HTML footer block on the login page |
+
+Branding tri-state: unset keeps the localized default; explicitly set to `""`
+suppresses headings (browser tab titles fall back to a localized non-blank
+value); any non-empty value is rendered. Branding values are operator-trusted
+HTML and are rendered unescaped — do not let untrusted users control them.
+After flag/env precedence is resolved, branding strings expand process
+environment references with shell syntax: `${VAR}` and `$VAR`; undefined vars
+expand to empty, and write `$$` for a literal dollar. Expansion happens once at
+startup and env values may themselves contain HTML.
 
 Provide **either** `--agents` (static) **or** `--agents-dns` (Kubernetes
 headless service); supplying both is an error. Port-less entries in `--agents`

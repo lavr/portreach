@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -49,8 +50,10 @@ const callbackExchangeTimeout = 15 * time.Second
 var templatesFS embed.FS
 
 var (
-	loginTmpl  = template.Must(template.ParseFS(templatesFS, "templates/login.html"))
-	deniedTmpl = template.Must(template.ParseFS(templatesFS, "templates/denied.html"))
+	loginTmpl       = template.Must(template.ParseFS(templatesFS, "templates/login.html"))
+	deniedTmpl      = template.Must(template.ParseFS(templatesFS, "templates/denied.html"))
+	authHTMLTagRe   = regexp.MustCompile(`<[^>]*>`)
+	authHTMLSpaceRe = regexp.MustCompile(`\s+`)
 )
 
 // oauthState is the payload sealed into the OAuth state cookie. It binds the
@@ -76,6 +79,7 @@ type Authenticator struct {
 	pcs       map[string]ProviderConfig // provider id -> config (allowlists)
 	order     []string                  // provider ids in config order
 	logger    *slog.Logger              // audit logger; nil falls back to slog.Default()
+	branding  LoginBranding
 }
 
 // New builds an Authenticator from cfg, constructing one Provider per configured
@@ -198,16 +202,21 @@ func (a *Authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	title, heading, showHeading := a.resolveAuthBranding(loc, "auth.login.title", "auth.login.heading")
 	data := struct {
-		Lang    string
-		Title   string
-		Heading string
-		Buttons []loginButton
+		Lang        string
+		Title       string
+		Heading     template.HTML
+		ShowHeading bool
+		Footer      template.HTML
+		Buttons     []loginButton
 	}{
-		Lang:    loc.Lang(),
-		Title:   loc.T("auth.login.title"),
-		Heading: loc.T("auth.login.heading"),
-		Buttons: buttons,
+		Lang:        loc.Lang(),
+		Title:       title,
+		Heading:     heading,
+		ShowHeading: showHeading,
+		Footer:      template.HTML(a.branding.Footer),
+		Buttons:     buttons,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = loginTmpl.ExecuteTemplate(w, "login.html", data)
@@ -410,24 +419,51 @@ func (a *Authenticator) allowed(providerID string, id Identity) bool {
 
 // renderDenied writes the localized 403 access-denied page.
 func (a *Authenticator) renderDenied(w http.ResponseWriter, loc *i18n.Localizer) {
+	title, heading, showHeading := a.resolveAuthBranding(loc, "auth.denied.title", "auth.denied.heading")
 	data := struct {
-		Lang       string
-		Title      string
-		Heading    string
-		Message    string
-		LoginURL   string
-		LoginLabel string
+		Lang        string
+		Title       string
+		Heading     template.HTML
+		ShowHeading bool
+		Message     string
+		LoginURL    string
+		LoginLabel  string
 	}{
-		Lang:       loc.Lang(),
-		Title:      loc.T("auth.denied.title"),
-		Heading:    loc.T("auth.denied.heading"),
-		Message:    loc.T("auth.denied.message"),
-		LoginURL:   LoginPath,
-		LoginLabel: loc.T("auth.login.title"),
+		Lang:        loc.Lang(),
+		Title:       title,
+		Heading:     heading,
+		ShowHeading: showHeading,
+		Message:     loc.T("auth.denied.message"),
+		LoginURL:    LoginPath,
+		LoginLabel:  loc.T("auth.login.title"),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
 	_ = deniedTmpl.ExecuteTemplate(w, "denied.html", data)
+}
+
+func (a *Authenticator) resolveAuthBranding(loc *i18n.Localizer, titleKey, headingKey string) (string, template.HTML, bool) {
+	title := loc.T(titleKey)
+	if a.branding.Title != nil && *a.branding.Title != "" {
+		if stripped := stripAuthHTML(*a.branding.Title); stripped != "" {
+			title = stripped
+		}
+	}
+
+	heading := template.HTML(loc.T(headingKey))
+	showHeading := true
+	if a.branding.Header != nil {
+		if *a.branding.Header == "" {
+			showHeading = false
+		} else {
+			heading = template.HTML(*a.branding.Header)
+		}
+	}
+	return title, heading, showHeading
+}
+
+func stripAuthHTML(s string) string {
+	return strings.TrimSpace(authHTMLSpaceRe.ReplaceAllString(authHTMLTagRe.ReplaceAllString(s, " "), " "))
 }
 
 // setStateCookie seals st under the cookie key and writes the state cookie.

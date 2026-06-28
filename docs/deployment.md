@@ -45,6 +45,19 @@ ui:
     mode: relative   # relative | fqdn | bare (see "Agent discovery" below)
   ingress:
     enabled: false   # enable + set hosts to expose externally
+  branding:
+    title: '<span style="color:#b62324">PROD — ${CLUSTER_NAME}</span>'
+    description: null
+    footer: null
+  loginBranding:
+    title: 'PROD login — ${CLUSTER_NAME}'
+    header: '<span style="color:#b62324">PROD — ${CLUSTER_NAME}</span>'
+    footer: 'Use your corporate SSO account.'
+  extraEnv:
+    - name: CLUSTER_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
 
 # clusterDomain: cluster.local   # used ONLY in discovery.mode: fqdn
 
@@ -69,7 +82,10 @@ helm lint charts/portreach
 ```
 
 See [`charts/portreach/README.md`](../charts/portreach/README.md) for the full
-values reference.
+values reference. Branding values are optional (`null` means unset/localized
+default; `""` means explicitly empty) and may contain trusted HTML plus
+`${VAR}`/`$VAR` placeholders expanded from the UI container environment, so one
+values file can render distinct titles per cluster via `extraEnv`.
 
 ### Agent discovery (cluster-domain portability)
 

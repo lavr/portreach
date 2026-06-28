@@ -11,22 +11,27 @@ import (
 
 // Server serves the UI aggregator HTTP endpoints.
 type Server struct {
-	disc    discovery.Discoverer
-	client  *http.Client
-	timeout time.Duration
+	disc     discovery.Discoverer
+	client   *http.Client
+	timeout  time.Duration
+	branding Branding
 }
 
 // New builds a UI Server. timeout bounds the whole fan-out budget; a
 // non-positive value falls back to a sensible default.
-func New(disc discovery.Discoverer, timeout time.Duration) *Server {
+func New(disc discovery.Discoverer, timeout time.Duration, opts ...Option) *Server {
 	if timeout <= 0 {
 		timeout = 8 * time.Second
 	}
-	return &Server{
+	s := &Server{
 		disc:    disc,
 		client:  &http.Client{Timeout: timeout},
 		timeout: timeout,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Handler returns the UI's HTTP routes.

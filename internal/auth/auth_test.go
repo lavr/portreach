@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lavr/portreach/internal/i18n"
 )
 
 // fakeProvider is a hermetic Provider for handler tests: AuthCodeURL echoes the
@@ -523,5 +525,75 @@ func TestButtonLabelFallsBackToType(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), "Sign in with github") {
 		t.Errorf("expected fallback label, body:\n%s", rec.Body.String())
+	}
+}
+
+func TestLoginBrandingOverridesAndSuppresses(t *testing.T) {
+	pcs := []ProviderConfig{{ID: "gh", Type: TypeGitHub}}
+	a := newTestAuth(nil, pcs, &fakeProvider{id: "gh", display: "GitHub", ptype: TypeGitHub})
+	title := `<b>Prod Login</b>`
+	header := `<span>Prod Header</span>`
+	a.branding = LoginBranding{Title: &title, Header: &header, Footer: `<em>login footer</em>`}
+
+	rec := httptest.NewRecorder()
+	a.handleLogin(rec, httptest.NewRequest(http.MethodGet, LoginPath, nil))
+	body := rec.Body.String()
+	for _, want := range []string{`<title>Prod Login</title>`, `<h1><span>Prod Header</span></h1>`, `<em>login footer</em>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("branded login missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `&lt;span&gt;Prod`) || strings.Contains(body, `&lt;em&gt;login`) {
+		t.Errorf("login branding HTML was escaped:\n%s", body)
+	}
+
+	empty := ""
+	a.branding = LoginBranding{Title: &empty, Header: &empty}
+	rec = httptest.NewRecorder()
+	a.handleLogin(rec, httptest.NewRequest(http.MethodGet, LoginPath, nil))
+	body = rec.Body.String()
+	if strings.Contains(body, "<h1>") {
+		t.Errorf("empty login header should suppress h1:\n%s", body)
+	}
+	if !strings.Contains(body, `<title>Sign in</title>`) {
+		t.Errorf("empty login title should keep localized tab title:\n%s", body)
+	}
+	if strings.Contains(body, `class="footer"`) {
+		t.Errorf("empty login footer should be absent:\n%s", body)
+	}
+}
+
+func TestDeniedBrandingOverridesAndSuppresses(t *testing.T) {
+	pcs := []ProviderConfig{{ID: "gh", Type: TypeGitHub}}
+	a := newTestAuth(nil, pcs, &fakeProvider{id: "gh", display: "GitHub", ptype: TypeGitHub})
+	title := `<b>Denied Prod</b>`
+	header := `<span>Denied Header</span>`
+	a.branding = LoginBranding{Title: &title, Header: &header, Footer: `<em>ignored</em>`}
+
+	rec := httptest.NewRecorder()
+	a.renderDenied(rec, i18n.FromRequest(httptest.NewRequest(http.MethodGet, "/", nil)))
+	body := rec.Body.String()
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	for _, want := range []string{`<title>Denied Prod</title>`, `<h1><span>Denied Header</span></h1>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("branded denied missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `ignored`) {
+		t.Errorf("denied page should not render login footer:\n%s", body)
+	}
+
+	empty := ""
+	a.branding = LoginBranding{Header: &empty}
+	rec = httptest.NewRecorder()
+	a.renderDenied(rec, i18n.FromRequest(httptest.NewRequest(http.MethodGet, "/", nil)))
+	body = rec.Body.String()
+	if strings.Contains(body, "<h1>") {
+		t.Errorf("empty denied header should suppress h1:\n%s", body)
+	}
+	if !strings.Contains(body, `<title>Access denied</title>`) {
+		t.Errorf("unset denied title should keep localized title:\n%s", body)
 	}
 }

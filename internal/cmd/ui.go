@@ -25,6 +25,12 @@ func runUI(args []string, deps Deps) error {
 	agentPort := fs.Int("agent-port", envInt("PORTREACH_AGENT_PORT", 8732), "agent port for DNS-discovered and port-less agents (env PORTREACH_AGENT_PORT)")
 	timeout := fs.Duration("timeout", 8*time.Second, "overall fan-out budget per check")
 	authConfig := fs.String("auth-config", os.Getenv("PORTREACH_AUTH_CONFIG"), "path to SSO auth config YAML; empty = auth disabled (env PORTREACH_AUTH_CONFIG)")
+	uiTitle := fs.String("ui-title", os.Getenv("PORTREACH_UI_TITLE"), "HTML page heading; empty when explicitly set suppresses it (env PORTREACH_UI_TITLE)")
+	uiDescription := fs.String("ui-description", os.Getenv("PORTREACH_UI_DESCRIPTION"), "HTML block rendered under the page heading (env PORTREACH_UI_DESCRIPTION)")
+	uiFooter := fs.String("ui-footer", os.Getenv("PORTREACH_UI_FOOTER"), "HTML footer block rendered at the bottom of the page (env PORTREACH_UI_FOOTER)")
+	loginTitle := fs.String("login-title", os.Getenv("PORTREACH_LOGIN_TITLE"), "HTML login/denied browser title; empty when explicitly set keeps localized tab title (env PORTREACH_LOGIN_TITLE)")
+	loginHeader := fs.String("login-header", os.Getenv("PORTREACH_LOGIN_HEADER"), "HTML login/denied heading; empty when explicitly set suppresses it (env PORTREACH_LOGIN_HEADER)")
+	loginFooter := fs.String("login-footer", os.Getenv("PORTREACH_LOGIN_FOOTER"), "HTML footer block rendered on the login page (env PORTREACH_LOGIN_FOOTER)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // -h/--help: flag already printed usage, exit cleanly
@@ -37,7 +43,18 @@ func runUI(args []string, deps Deps) error {
 		return &ExitError{Code: 2, Err: err}
 	}
 
-	handler, err := buildUIHandler(disc, *timeout, *authConfig, deps.Stdout)
+	uiBranding := ui.Branding{
+		Title:       expandOptionalEnv(resolveOptionalString(fs, "ui-title", uiTitle, "PORTREACH_UI_TITLE")),
+		Description: expandEnv(resolveString(fs, "ui-description", uiDescription, "PORTREACH_UI_DESCRIPTION")),
+		Footer:      expandEnv(resolveString(fs, "ui-footer", uiFooter, "PORTREACH_UI_FOOTER")),
+	}
+	loginBranding := auth.LoginBranding{
+		Title:  expandOptionalEnv(resolveOptionalString(fs, "login-title", loginTitle, "PORTREACH_LOGIN_TITLE")),
+		Header: expandOptionalEnv(resolveOptionalString(fs, "login-header", loginHeader, "PORTREACH_LOGIN_HEADER")),
+		Footer: expandEnv(resolveString(fs, "login-footer", loginFooter, "PORTREACH_LOGIN_FOOTER")),
+	}
+
+	handler, err := buildUIHandler(disc, *timeout, *authConfig, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
 	if err != nil {
 		return &ExitError{Code: 2, Err: err}
 	}
@@ -55,10 +72,19 @@ func runUI(args []string, deps Deps) error {
 // default: an empty path or a provider-less config yields the raw,
 // unauthenticated UI (backward compatible). A malformed or invalid enabled
 // config returns an error so runUI can fail fast with exit code 2.
-func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath string, out io.Writer) (http.Handler, error) {
+type handlerBranding struct {
+	ui    ui.Branding
+	login auth.LoginBranding
+}
+
+func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath string, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
+	var branding handlerBranding
+	if len(brandings) > 0 {
+		branding = brandings[0]
+	}
 	// Audit events go to stdout as JSON for the ИБ log pipeline (ELK/Loki).
 	logger := slog.New(slog.NewJSONHandler(out, nil))
-	handler := ui.New(disc, timeout).Handler()
+	handler := ui.New(disc, timeout, ui.WithBranding(branding.ui)).Handler()
 	// Audit every reachability check, attributing it to the authenticated user
 	// (or anonymous when auth is off, since no identity reaches the context).
 	audited := auth.AuditCheck(logger, handler)
@@ -76,7 +102,7 @@ func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfig
 		return audited, nil
 	}
 
-	authn, err := auth.New(cfg, auth.WithLogger(logger))
+	authn, err := auth.New(cfg, auth.WithLogger(logger), auth.WithBranding(branding.login))
 	if err != nil {
 		return nil, err
 	}

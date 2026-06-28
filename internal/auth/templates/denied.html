@@ -13,7 +13,7 @@ a { color: inherit; }
 </style>
 </head>
 <body>
-<h1>{{.Heading}}</h1>
+{{if .ShowHeading}}<h1>{{.Heading}}</h1>{{end}}
 <p>{{.Message}}</p>
 <p><a href="{{.LoginURL}}">{{.LoginLabel}}</a></p>
 </body>

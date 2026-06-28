@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -129,4 +130,46 @@ func TestRunUIInvalidAuthConfigExits2(t *testing.T) {
       type: github
 `)
 	assertExit(t, []string{"ui", "--agents=a:1", "--auth-config=" + path}, 2)
+}
+
+func TestBrandingFlagEnvResolutionAndExpansion(t *testing.T) {
+	t.Setenv("PORTREACH_UI_TITLE", "env")
+	t.Setenv("PORTREACH_UI_DESCRIPTION", "env-desc")
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	title := fs.String("ui-title", "", "")
+	desc := fs.String("ui-description", "", "")
+	if err := fs.Parse([]string{`--ui-title=`, `--ui-description=flag-desc`}); err != nil {
+		t.Fatal(err)
+	}
+	gotTitle := resolveOptionalString(fs, "ui-title", title, "PORTREACH_UI_TITLE")
+	if gotTitle == nil || *gotTitle != "" {
+		t.Fatalf("explicit empty title = %#v, want pointer to empty", gotTitle)
+	}
+	if gotDesc := resolveString(fs, "ui-description", desc, "PORTREACH_UI_DESCRIPTION"); gotDesc != "flag-desc" {
+		t.Fatalf("description = %q, want flag-desc", gotDesc)
+	}
+
+	fs = flag.NewFlagSet("test", flag.ContinueOnError)
+	title = fs.String("ui-title", "", "")
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	gotTitle = resolveOptionalString(fs, "ui-title", title, "PORTREACH_UI_TITLE")
+	if gotTitle == nil || *gotTitle != "env" {
+		t.Fatalf("env title = %#v, want env", gotTitle)
+	}
+
+	t.Setenv("PORTREACH_UI_TITLE", "")
+	gotTitle = resolveOptionalString(fs, "ui-title", title, "PORTREACH_UI_TITLE")
+	if gotTitle == nil || *gotTitle != "" {
+		t.Fatalf("present empty env title = %#v, want pointer to empty", gotTitle)
+	}
+
+	t.Setenv("NAME", "<b>prod</b>")
+	if got := expandEnv(`hello ${NAME} $NAME $$ $MISSING`); got != `hello <b>prod</b> <b>prod</b> $ ` {
+		t.Fatalf("expandEnv = %q", got)
+	}
+	if expandOptionalEnv(nil) != nil {
+		t.Fatal("nil optional expansion should stay nil")
+	}
 }
