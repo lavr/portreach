@@ -53,6 +53,12 @@ const (
 	cookieSecureNever  = "never"
 )
 
+// Group allowlist matching modes.
+const (
+	GroupMatchExact   = "exact"
+	GroupMatchSubtree = "subtree"
+)
+
 // Default base URL and display name for github, the one non-OIDC provider.
 // OIDC presets (including gitlab) own their issuer/display-name defaults in the
 // preset table (see presets.go), so they are deliberately absent here.
@@ -80,6 +86,7 @@ type ProviderConfig struct {
 	ClientSecret  string   `yaml:"clientSecret"`
 	AllowedOrgs   []string `yaml:"allowedOrgs"`
 	AllowedGroups []string `yaml:"allowedGroups"`
+	GroupMatch    string   `yaml:"groupMatch"` // exact (default) or subtree
 
 	// OIDC-specific fields (generic `oidc` type and presets).
 	Issuer        string   `yaml:"issuer"`        // OIDC issuer URL (discovery base)
@@ -175,6 +182,7 @@ func LoadConfig(path string) (*Config, error) {
 		p.BaseURL = expandEnv(p.BaseURL)
 		p.ClientID = expandEnv(p.ClientID)
 		p.ClientSecret = expandEnv(p.ClientSecret)
+		p.GroupMatch = expandEnv(p.GroupMatch)
 		p.Issuer = expandEnv(p.Issuer)
 		p.UsernameClaim = expandEnv(p.UsernameClaim)
 		p.GroupsClaim = expandEnv(p.GroupsClaim)
@@ -194,6 +202,9 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		if p.DisplayName == "" {
 			p.DisplayName = defaultDisplayName[p.Type]
+		}
+		if p.GroupMatch == "" {
+			p.GroupMatch = GroupMatchExact
 		}
 	}
 
@@ -299,6 +310,12 @@ func (c *Config) Validate() error {
 		}
 		if p.ClientSecret == "" {
 			return fmt.Errorf("auth: provider %q missing clientSecret", p.ID)
+		}
+		switch p.GroupMatch {
+		case "", GroupMatchExact, GroupMatchSubtree:
+			// ok (empty is accepted for programmatic configs and behaves like exact)
+		default:
+			return fmt.Errorf("auth: provider %q has unknown groupMatch %q", p.ID, p.GroupMatch)
 		}
 	}
 	return nil

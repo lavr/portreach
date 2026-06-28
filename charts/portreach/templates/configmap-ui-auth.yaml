@@ -26,6 +26,7 @@
   {{- with .baseURL }}{{- $_ := set $p "baseURL" . -}}{{- end -}}
   {{- with .allowedOrgs }}{{- $_ := set $p "allowedOrgs" . -}}{{- end -}}
   {{- with .allowedGroups }}{{- $_ := set $p "allowedGroups" . -}}{{- end -}}
+  {{- with .groupMatch }}{{- $_ := set $p "groupMatch" . -}}{{- end -}}
   {{- with .issuer }}{{- $_ := set $p "issuer" . -}}{{- end -}}
   {{- with .scopes }}{{- $_ := set $p "scopes" . -}}{{- end -}}
   {{- with .usernameClaim }}{{- $_ := set $p "usernameClaim" . -}}{{- end -}}

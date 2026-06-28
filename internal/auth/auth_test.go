@@ -374,6 +374,43 @@ func TestAllowedNoListsAllowsAny(t *testing.T) {
 	}
 }
 
+func TestAllowedGroupMatchExactByDefault(t *testing.T) {
+	a := newTestAuth(nil, []ProviderConfig{{
+		ID: "gl", Type: TypeGitLab, AllowedGroups: []string{"acme/backend"},
+	}}, &fakeProvider{id: "gl", ptype: TypeGitLab})
+	if !a.allowed("gl", Identity{Login: "alice", Groups: []string{"acme/backend"}}) {
+		t.Error("exact group should pass")
+	}
+	if a.allowed("gl", Identity{Login: "alice", Groups: []string{"acme/backend/team-a"}}) {
+		t.Error("subgroup must not pass with default exact matching")
+	}
+}
+
+func TestAllowedGroupMatchSubtree(t *testing.T) {
+	a := newTestAuth(nil, []ProviderConfig{{
+		ID: "gl", Type: TypeGitLab, AllowedGroups: []string{"acme/backend"}, GroupMatch: GroupMatchSubtree,
+	}}, &fakeProvider{id: "gl", ptype: TypeGitLab})
+	cases := []struct {
+		name   string
+		groups []string
+		want   bool
+	}{
+		{"exact", []string{"acme/backend"}, true},
+		{"descendant", []string{"acme/backend/team-a"}, true},
+		{"deep-descendant", []string{"acme/backend/team-a/service"}, true},
+		{"sibling-prefix", []string{"acme/backend-ops"}, false},
+		{"parent", []string{"acme"}, false},
+		{"unrelated", []string{"acme/frontend"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := a.allowed("gl", Identity{Login: "alice", Groups: tc.groups}); got != tc.want {
+				t.Fatalf("allowed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCallbackExchangeError(t *testing.T) {
 	pcs := []ProviderConfig{{ID: "gh", Type: TypeGitHub}}
 	a := newTestAuth(nil, pcs, &fakeProvider{
