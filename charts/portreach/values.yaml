@@ -36,6 +36,15 @@ ui:
   extraEnv: []
   envFrom: []
 
+  branding:
+    title: null
+    description: null
+    footer: null
+  loginBranding:
+    title: null
+    header: null
+    footer: null
+
   agentDiscovery:
     dnsName: ""
     mode: relative

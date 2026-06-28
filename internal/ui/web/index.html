@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.L.T "app.title"}}</title>
+<title>{{.DocTitle}}</title>
 <style>
 :root { color-scheme: light dark; }
 body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; }
@@ -20,10 +20,12 @@ th { background: #8881; }
 .err { color: #b62324; }
 .summary { margin: 1rem 0; font-weight: 600; }
 .muted { color: #8888; }
+.branding-footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #8884; color: #888; }
 </style>
 </head>
 <body>
-<h1>{{.L.T "app.heading"}}</h1>
+{{if .ShowTitle}}<h1>{{.Title}}</h1>{{end}}
+{{if .Description}}<div class="branding-description">{{.Description}}</div>{{end}}
 <form method="get" action="/">
   <label>{{.L.T "form.host"}}
     <input type="text" name="host" value="{{.Host}}" placeholder="dwh-clickhouse-pre" autofocus>
@@ -74,5 +76,6 @@ th { background: #8881; }
   </tbody>
 </table>
 {{end}}{{end}}
+{{if .Footer}}<footer class="branding-footer">{{.Footer}}</footer>{{end}}
 </body>
 </html>

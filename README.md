@@ -134,8 +134,11 @@ the hostname.
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | port for DNS-discovered / port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | SSO auth config YAML; empty = auth disabled |
+| `--ui-title` / `--ui-description` / `--ui-footer` | `PORTREACH_UI_*` | | trusted HTML branding for the main page |
+| `--login-title` / `--login-header` / `--login-footer` | `PORTREACH_LOGIN_*` | | trusted HTML branding for login/denied pages |
 
-Use `--agents` **or** `--agents-dns`, not both. Full reference:
+Branding supports unset/set-empty/set tri-state semantics and `${VAR}`/`$VAR`
+env expansion for per-cluster labels. Use `--agents` **or** `--agents-dns`, not both. Full reference:
 [`docs/configuration.md`](docs/configuration.md).
 
 ## Security

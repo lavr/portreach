@@ -11,14 +11,16 @@ h1 { font-size: 1.4rem; margin-bottom: 1.5rem; }
 .providers { display: flex; flex-direction: column; gap: .75rem; }
 a.btn { display: block; padding: .6rem 1rem; font-size: 1rem; border: 1px solid #8886; border-radius: .4rem; text-decoration: none; color: inherit; background: #8881; }
 a.btn:hover { background: #8882; }
+.footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #8884; color: #888; }
 </style>
 </head>
 <body>
-<h1>{{.Heading}}</h1>
+{{if .ShowHeading}}<h1>{{.Heading}}</h1>{{end}}
 <div class="providers">
 {{range .Buttons}}
   <a class="btn" href="{{.URL}}">{{.Label}}</a>
 {{end}}
 </div>
+{{if .Footer}}<div class="footer">{{.Footer}}</div>{{end}}
 </body>
 </html>

@@ -514,3 +514,39 @@ func TestChartLint(t *testing.T) {
 		}
 	}
 }
+
+func TestUIBrandingEnvRendering(t *testing.T) {
+	requireHelm(t)
+
+	out := helmTemplate(t)
+	for _, name := range []string{"PORTREACH_UI_TITLE", "PORTREACH_UI_DESCRIPTION", "PORTREACH_UI_FOOTER", "PORTREACH_LOGIN_TITLE", "PORTREACH_LOGIN_HEADER", "PORTREACH_LOGIN_FOOTER"} {
+		if strings.Contains(out, "name: "+name) {
+			t.Fatalf("default null branding should omit %s\n%s", name, out)
+		}
+	}
+
+	values := writeValues(t, `
+ui:
+  branding:
+    title: "Prod"
+    description: ""
+    footer: "<b>foot</b>"
+  loginBranding:
+    title: "Login Prod"
+    header: ""
+    footer: "<i>login foot</i>"
+`)
+	out = helmTemplate(t, "-f", values)
+	for _, want := range []string{
+		"name: PORTREACH_UI_TITLE\n              value: \"Prod\"",
+		"name: PORTREACH_UI_DESCRIPTION\n              value: \"\"",
+		"name: PORTREACH_UI_FOOTER\n              value: \"<b>foot</b>\"",
+		"name: PORTREACH_LOGIN_TITLE\n              value: \"Login Prod\"",
+		"name: PORTREACH_LOGIN_HEADER\n              value: \"\"",
+		"name: PORTREACH_LOGIN_FOOTER\n              value: \"<i>login foot</i>\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q\n%s", want, out)
+		}
+	}
+}

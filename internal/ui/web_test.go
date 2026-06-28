@@ -218,3 +218,50 @@ func TestIndexNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want 404", code)
 	}
 }
+
+func TestIndexBrandingTriStateAndHTML(t *testing.T) {
+	customTitle := `<span>Prod</span> — <b>EU</b>`
+	srv := httptest.NewServer(New(staticList{}, time.Second, WithBranding(Branding{
+		Title:       &customTitle,
+		Description: `<strong>trusted</strong> description`,
+		Footer:      `<em>trusted</em> footer`,
+	})).Handler())
+	defer srv.Close()
+
+	code, body := get(t, srv.URL, "/")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	for _, want := range []string{`<title>Prod — EU</title>`, `<h1><span>Prod</span> — <b>EU</b></h1>`, `<strong>trusted</strong> description`, `<em>trusted</em> footer`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("branded page missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `&lt;strong&gt;trusted`) {
+		t.Errorf("branding HTML was escaped:\n%s", body)
+	}
+}
+
+func TestIndexBrandingUnsetLocalizedAndEmptySuppressesHeading(t *testing.T) {
+	srv := httptest.NewServer(New(staticList{}, time.Second).Handler())
+	defer srv.Close()
+	_, en := get(t, srv.URL, "/")
+	if !strings.Contains(en, `<title>portreach</title>`) || !strings.Contains(en, `portreach — reachability from every node`) {
+		t.Fatalf("unset branding did not keep English defaults:\n%s", en)
+	}
+	_, ru := getLang(t, srv.URL, "/", "ru")
+	if !strings.Contains(ru, `portreach — доступность с каждого узла`) {
+		t.Fatalf("unset branding did not keep Russian heading:\n%s", ru)
+	}
+
+	empty := ""
+	srv2 := httptest.NewServer(New(staticList{}, time.Second, WithBranding(Branding{Title: &empty})).Handler())
+	defer srv2.Close()
+	_, body := get(t, srv2.URL, "/")
+	if strings.Contains(body, "<h1>") {
+		t.Errorf("empty explicit title should suppress h1:\n%s", body)
+	}
+	if !strings.Contains(body, `<title>portreach</title>`) {
+		t.Errorf("empty explicit title should keep non-blank tab title:\n%s", body)
+	}
+}
