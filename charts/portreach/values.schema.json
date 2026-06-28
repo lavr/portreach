@@ -318,6 +318,10 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "groupMatch": {
+          "type": "string",
+          "enum": ["exact", "subtree"]
+        },
         "scopes": {
           "type": "array",
           "items": { "type": "string" }

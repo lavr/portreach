@@ -69,6 +69,7 @@ ui:
         baseURL: https://gitlab.corp
         clientID: glid
         allowedGroups: [infra, sre]
+        groupMatch: subtree
       - id: keycloak
         type: oidc
         displayName: "Corporate SSO"
@@ -135,6 +136,7 @@ func TestChartAuthExternalSecret(t *testing.T) {
 		"id: corp-gitlab",
 		"displayName: Corporate GitLab",
 		"baseURL: https://gitlab.corp",
+		"groupMatch: subtree",
 		"id: keycloak",
 		"issuer: https://keycloak.corp/realms/main",
 		"groupsClaim: groups",

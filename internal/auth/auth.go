@@ -409,12 +409,19 @@ func (a *Authenticator) allowed(providerID string, id Identity) bool {
 	}
 	for _, want := range allowedGroups {
 		for _, have := range id.Groups {
-			if want == have {
+			if groupAllowed(pc.GroupMatch, want, have) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func groupAllowed(match, want, have string) bool {
+	if want == have {
+		return true
+	}
+	return match == GroupMatchSubtree && strings.HasPrefix(have, want+"/")
 }
 
 // renderDenied writes the localized 403 access-denied page.

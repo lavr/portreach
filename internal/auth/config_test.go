@@ -27,6 +27,7 @@ func validKeyHex() string {
 func TestLoadConfigMultiProvider(t *testing.T) {
 	t.Setenv("GITLAB_SECRET", "gl-secret")
 	t.Setenv("GITHUB_SECRET", "gh-secret")
+	t.Setenv("GITLAB_GROUP_MATCH", "subtree")
 	t.Setenv("COOKIE_KEY", validKeyHex())
 
 	path := writeConfig(t, `
@@ -42,6 +43,7 @@ auth:
       clientID: abc
       clientSecret: ${GITLAB_SECRET}
       allowedGroups: [infra, sre]
+      groupMatch: ${GITLAB_GROUP_MATCH}
     - id: github
       type: github
       clientID: def
@@ -68,6 +70,9 @@ auth:
 	}
 	if gl.BaseURL != "https://gitlab.corp" {
 		t.Errorf("gitlab baseURL: %q", gl.BaseURL)
+	}
+	if gl.GroupMatch != GroupMatchSubtree {
+		t.Errorf("gitlab groupMatch: %q", gl.GroupMatch)
 	}
 	gh := cfg.Providers[1]
 	if gh.ClientSecret != "gh-secret" {
@@ -192,6 +197,23 @@ func TestValidate(t *testing.T) {
 		c.Providers[0].ClientSecret = ""
 		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "clientSecret") {
 			t.Fatalf("want clientSecret error, got %v", err)
+		}
+	})
+
+	t.Run("unknown-groupMatch", func(t *testing.T) {
+		c := base()
+		c.Providers[0].GroupMatch = "prefix"
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "groupMatch") || !strings.Contains(err.Error(), "gh") {
+			t.Fatalf("want groupMatch error naming provider, got %v", err)
+		}
+	})
+
+	t.Run("groupMatch-subtree-valid", func(t *testing.T) {
+		c := base()
+		c.Providers[0].GroupMatch = GroupMatchSubtree
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
 		}
 	})
 
