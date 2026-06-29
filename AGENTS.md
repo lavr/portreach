@@ -18,8 +18,11 @@ are aggregated in a web UI. Single Go binary, three subcommands.
 - `internal/probe` — TCP + DNS + latency probing.
 - `internal/discovery` — agent discovery (static CSV list + DNS A-records).
 - `internal/ui` — UI fan-out aggregator, JSON API, server-rendered web form (`web/index.html`).
-- `internal/auth` — optional SSO (GitHub OAuth2 + generic OIDC presets), sealed-cookie
-  session, allowlist, slog audit log. Off unless configured.
+- `internal/auth` — optional UI auth, off unless configured. Two independent paths
+  resolving to the same `Session`/RBAC: browser SSO (GitHub OAuth2 + generic OIDC
+  presets, sealed-cookie session) and **API bearer** (OIDC/JWT access tokens validated
+  offline by JWKS — `iss`+`aud`+`exp`+sig — for dev/CI; GitHub & opaque tokens
+  unsupported). Allowlist + slog audit log (`auth_method=cookie|bearer`) apply to both.
 - `internal/i18n` — `Accept-Language` localization (en + ru) for the UI and auth pages.
 - `internal/version` — version string holder.
 - `internal/charttest` — `helm template` render assertions for the Helm chart.
@@ -73,8 +76,19 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
   node (SSRF surface) and `internal/auth` handles cookies/tokens/allowlists. Treat
   changes there carefully; preserve the fail-closed behavior and the existing
   timeout/deadline clamps.
-- Agent endpoints (`internal/agent`) are internal cluster traffic — not behind auth
-  by design. Don't add auth there.
+- **Two auth boundaries** (both backward-compatible — unset → today's open behaviour):
+  - *UI API*: a request to `/api/*` is authenticated by **either** a browser session
+    cookie **or** `Authorization: Bearer <JWT>` (see `internal/auth` above). API-only
+    (bearer, no browser providers) is a valid headless/CI config; failures return 401
+    JSON, not a login redirect.
+  - *UI → agent*: agent endpoints (`internal/agent`) are internal cluster traffic.
+    They carry **no SSO** — instead an optional shared bearer token
+    (`--auth-token` / `PORTREACH_AGENT_TOKEN`, constant-time compare) is the primary
+    isolation boundary; the UI sends it on every `/check` (`--agent-token`). The same
+    token gates `/metrics` by default (`--metrics-public` opts it back open for
+    Prometheus); `/healthz` is always open. NetworkPolicy is best-effort only and
+    frequently unenforced under `hostNetwork` — don't rely on it instead of the token.
+    Don't put OIDC/SSO on the agent; the shared token is the design.
 
 ## Helm chart
 

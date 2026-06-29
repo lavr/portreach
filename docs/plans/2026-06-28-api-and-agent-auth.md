@@ -259,7 +259,7 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 - [x] `go test ./... -v`, `go vet ./...`, `helm lint` clean; `internal/auth` ≥ 80%
 
 ### Task 8: [Final] Knowledge
-- [ ] note the dual cookie-or-bearer model, agent token, and `/metrics`/NP caveats in
+- [x] note the dual cookie-or-bearer model, agent token, and `/metrics`/NP caveats in
       README/AGENTS.md
 
 *Note: ralphex auto-moves completed plans to `docs/plans/completed/`.*
