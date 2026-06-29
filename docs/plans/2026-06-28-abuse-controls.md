@@ -123,32 +123,32 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 ## Implementation Steps
 
 ### Task 1: Rate-limiter core (reservation-based, multi-bucket)
-- [ ] add `golang.org/x/time/rate`; `go mod tidy` (commit `go.sum`)
-- [ ] new `internal/ratelimit`: registries for user, target (`host:port`), and global
+- [x] add `golang.org/x/time/rate`; `go mod tidy` (commit `go.sum`)
+- [x] new `internal/ratelimit`: registries for user, target (`host:port`), and global
       buckets (rate/burst per scope); injectable clock
-- [ ] **config validation (#R6), enabled-gated (Medium)**: a disabled/unset limiter
+- [x] **config validation (#R6), enabled-gated (Medium)**: a disabled/unset limiter
       (zero defaults) is **valid** (no-op). The positive checks (rate > 0, burst ≥ 1, sane
       global, reject `n > burst`) apply **only when the limiter is enabled/configured** —
       so the default-off config passes `Validate()` and only a half-configured limiter is
       rejected
-- [ ] `Reserve(identityKey, targetKey) (Reservation, ok, retryAfter)`: take a
+- [x] `Reserve(identityKey, targetKey) (Reservation, ok, retryAfter)`: take a
       reservation from **each** applicable bucket; if any is not immediately OK,
       **Cancel() all** taken reservations and return `ok=false` with the max delay as
       `retryAfter` (finding #7) — never partially consume
-- [ ] **bounded fallback (#R6)**: a reservation that is not OK or whose `Delay()` is
+- [x] **bounded fallback (#R6)**: a reservation that is not OK or whose `Delay()` is
       `+Inf`/exceeds a max wait is treated as an immediate reject with a **capped**
       `Retry-After` (never a hang or an unbounded value)
-- [ ] identity key = authenticated user when present, else proxy-aware client IP
+- [x] identity key = authenticated user when present, else proxy-aware client IP
       (finding #8): trust a forwarded header only when `RemoteAddr` ∈ configured
       trusted-proxy CIDRs, else use `RemoteAddr`
-- [ ] idle buckets evicted to bound memory
-- [ ] write tests (fake clock): allow→deny at limit; per-user and per-target isolation;
+- [x] idle buckets evicted to bound memory
+- [x] write tests (fake clock): allow→deny at limit; per-user and per-target isolation;
       **denied request leaves other buckets untouched**; refill over time;
       trusted-proxy header honoured only from trusted source; **disabled/default config
       passes Validate (no-op)**; **invalid configs rejected only when enabled** (burst 0,
       negative rate, n > burst); **impossible reservation → capped Retry-After reject, no
       hang**
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Wire limiter + proxy-aware client IP into the UI API
 - [ ] `internal/cmd/ui.go`: build limiter + trusted-proxy config from flags/env
