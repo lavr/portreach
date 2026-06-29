@@ -56,15 +56,26 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 					writeUnauthorized(w)
 					return
 				}
-				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), sess)))
+				// RBAC is enforced here for bearer identities exactly as it is at
+				// callback time for cookie sessions: a verified token whose
+				// identity is outside the matched entry's allowlist is a 403.
+				if !a.allowed(sess.Provider, Identity{Login: sess.User, Groups: sess.Groups}) {
+					writeForbidden(w)
+					return
+				}
+				ctx := WithAuthMethod(WithIdentity(r.Context(), sess), AuthMethodBearer)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 		}
 
-		// Cookie path, when browser SSO is configured.
+		// Cookie path, when browser SSO is configured. The allowlist was already
+		// enforced at /auth/callback before the session was sealed, so a present,
+		// unexpired cookie is trusted as-is here.
 		if browserEnabled {
 			if sess, err := a.readSessionCookie(r); err == nil {
-				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), sess)))
+				ctx := WithAuthMethod(WithIdentity(r.Context(), sess), AuthMethodCookie)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 		}
@@ -87,6 +98,16 @@ func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = io.WriteString(w, `{"error":"unauthorized"}`+"\n")
+}
+
+// writeForbidden writes a 403 JSON body for an authenticated-but-not-authorized
+// bearer request (the token verified, but its identity is outside the matched
+// entry's allowlist). Bearer is always programmatic, so the rejection is JSON
+// rather than the HTML denied page used for browser sessions.
+func writeForbidden(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = io.WriteString(w, `{"error":"forbidden"}`+"\n")
 }
 
 // readSessionCookie opens and validates the session cookie, rejecting a

@@ -167,20 +167,20 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 - [x] run tests — must pass before Task 2
 
 ### Task 2: Uniform RBAC + audit for token identities (fail-closed)
-- [ ] **unified allowlist lookup (High #1)**: today `allowed()` reads only
+- [x] **unified allowlist lookup (High #1)**: today `allowed()` reads only
       `a.pcs[providerID]` (`auth.go:387`) — an **API-entry id is not in `a.pcs`**, so a
       bearer identity would hit an empty allowlist and, with empty global `AllowedUsers`,
       **fail open**. Refactor the lookup to resolve the allowlist for a `Session.Provider`
       from a **combined registry** (browser `pcs` **+** API entries) keyed by id; an id
       present in **neither** → **deny** (fail-closed), never default-allow
-- [ ] enforce that resolved group/user allowlist for bearer identities identically to
+- [x] enforce that resolved group/user allowlist for bearer identities identically to
       cookie sessions (deny → 403)
-- [ ] `AuditCheck` emits `user`/`provider` for token calls (provider = matched id);
+- [x] `AuditCheck` emits `user`/`provider` for token calls (provider = matched id);
       add a cheap `auth_method=cookie|bearer` field
-- [ ] write tests: allowlisted group passes; **API-only non-member → 403** (regression
+- [x] write tests: allowlisted group passes; **API-only non-member → 403** (regression
       guard for #1); token for a non-configured issuer/audience → 401 (finding #2);
       unknown `Session.Provider` id → deny; audit carries the token identity + method
-- [ ] run tests — must pass before Task 3
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Agent bearer-token auth (+ /metrics gating, single listener)
 - [ ] `internal/cmd/agent.go`: `--auth-token`/`PORTREACH_AGENT_TOKEN`,

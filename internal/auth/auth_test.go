@@ -55,14 +55,19 @@ func newTestAuth(allowedUsers []string, pcs []ProviderConfig, providers ...Provi
 		Providers:    pcs,
 	}
 	a := &Authenticator{
-		cfg:       cfg,
-		providers: make(map[string]Provider),
-		pcs:       make(map[string]ProviderConfig),
+		cfg:        cfg,
+		providers:  make(map[string]Provider),
+		pcs:        make(map[string]ProviderConfig),
+		allowlists: make(map[string]allowlist),
 	}
 	for i, p := range providers {
 		a.providers[p.ID()] = p
 		a.pcs[p.ID()] = pcs[i]
 		a.order = append(a.order, p.ID())
+		groups := make([]string, 0, len(pcs[i].AllowedOrgs)+len(pcs[i].AllowedGroups))
+		groups = append(groups, pcs[i].AllowedOrgs...)
+		groups = append(groups, pcs[i].AllowedGroups...)
+		a.allowlists[p.ID()] = allowlist{groups: groups, groupMatch: pcs[i].GroupMatch}
 	}
 	return a
 }

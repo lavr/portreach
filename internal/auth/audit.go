@@ -78,6 +78,7 @@ func AuditCheck(logger *slog.Logger, next http.Handler) http.Handler {
 				slog.String("event", "check"),
 				slog.String("user", user),
 				slog.String("provider", provider),
+				slog.String("auth_method", AuthMethodFromContext(r.Context())),
 				slog.String("target", target),
 				slog.String("remote", r.RemoteAddr),
 			)
