@@ -93,9 +93,3 @@ func (s *Server) logDrop(r *http.Request, target Target, discovered, queried, dr
 		slog.Int("dropped", dropped),
 	)
 }
-
-// retryAfterSeconds renders the Retry-After header value via the shared limiter
-// helper (whole seconds rounded up, floored at 1).
-func retryAfterSeconds(d time.Duration) string {
-	return ratelimit.RetryAfterSeconds(d)
-}

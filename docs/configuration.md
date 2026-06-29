@@ -47,9 +47,11 @@ Endpoints:
 
 - `GET /check?host=&port=&proto=tcp&timeout=5s` → JSON probe result with a
   `node` field. Returns `200` even when `tcp.ok` is `false` (the probe ran),
-  `400` on bad input, `403` when the target is denied by policy.
+  `400` on bad input, `403` when the target is denied by policy, and `429` +
+  `Retry-After` when the optional rate limiter throttles the request (see the
+  rate limiter section).
 - `GET /healthz` → `{"status":"ok","node":"..."}`.
-- `GET /metrics` → Prometheus text: `portreach_checks_total{result="ok|fail|denied|bad_request"}`.
+- `GET /metrics` → Prometheus text: `portreach_checks_total{result="ok|fail|denied|bad_request|throttled"}`.
 
 `proto` is `tcp` only for now; `timeout` is a Go duration (default `5s`, capped
 at `30s` — larger values are silently clamped; non-positive values fall back to

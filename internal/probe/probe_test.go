@@ -82,13 +82,17 @@ func TestRunGuardDeniesOnlyAddress(t *testing.T) {
 func TestRunGuardMixedAllowedSiblingConnects(t *testing.T) {
 	allowed := newCountingListener(t, "tcp", "127.0.0.1:0")
 	defer allowed.ln.Close() //nolint:errcheck // best-effort close
-	denied := newCountingListener(t, "tcp6", "[::1]:0")
+	port := allowed.ln.Addr().(*net.TCPAddr).Port
+
+	// Bind the denied ::1 listener on the *same* port as the allowed sibling, so a
+	// guard regression that let ::1 through would actually connect and bump the
+	// accept count. Without this the denied address has no listener at the dialed
+	// port and the zero-accept assertion would pass even with the guard removed —
+	// proving the topology, not the guard. 127.0.0.1 and ::1 are distinct addresses,
+	// so both can bind the same port number.
+	denied := newCountingListener(t, "tcp6", "[::1]:"+strconv.Itoa(port))
 	defer denied.ln.Close() //nolint:errcheck // best-effort close
 
-	// Dial both on the allowed sibling's port; only 127.0.0.1 has a listener there,
-	// so the allowed address is the only one that can connect — and ::1 is guarded,
-	// so it is refused at connect regardless.
-	port := allowed.ln.Addr().(*net.TCPAddr).Port
 	guard := NewDenyGuard([]*net.IPNet{mustCIDR(t, "::1/128")})
 	res := Run(context.Background(), "mixed.test", []string{"::1", "127.0.0.1"}, port, "tcp", 2*time.Second, nil, guard)
 
@@ -97,9 +101,6 @@ func TestRunGuardMixedAllowedSiblingConnects(t *testing.T) {
 	}
 	if res.TCP == nil || !res.TCP.OK {
 		t.Fatalf("expected the allowed sibling to connect, got %+v", res.TCP)
-	}
-	if n := denied.ln.Addr(); n == nil { // keep denied referenced even if guard short-circuits
-		t.Fatal("nil denied listener addr")
 	}
 	if n := denied.accepted.Load(); n != 0 {
 		t.Errorf("denied (::1) listener accepted %d connections, want 0 (never connect to a denied IP)", n)

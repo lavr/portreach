@@ -542,6 +542,36 @@ func TestAgentRateLimit(t *testing.T) {
 	}
 }
 
+// TestAgentGlobalRateLimit verifies the agent's optional global scope throttles
+// across distinct targets: with only a global bucket configured, a second call to
+// a *different* target is still 429 — the process-global cap, not the per-target
+// bucket, is the gate. A frozen clock keeps it hermetic (no refill between calls).
+func TestAgentGlobalRateLimit(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	fixed := time.Now()
+	lim, err := ratelimit.New(ratelimit.Config{
+		Enabled: true,
+		Global:  ratelimit.Scope{Rate: 1, Burst: 1},
+	}, ratelimit.WithClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatalf("ratelimit.New: %v", err)
+	}
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithLimiter(lim)).Handler())
+	defer srv.Close()
+
+	// First call spends the single global token.
+	if resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first call: status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	// A different target is still throttled by the shared global bucket.
+	resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=localhost&port=%d", port))
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second call (other target): status = %d, want 429 (global cap); body=%s", resp.StatusCode, body)
+	}
+}
+
 // TestAgentRateLimitUnsetUnlimited verifies that without a limiter /check stays
 // unlimited (today's behaviour): repeated calls to the same target all pass.
 func TestAgentRateLimitUnsetUnlimited(t *testing.T) {

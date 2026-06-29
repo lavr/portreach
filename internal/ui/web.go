@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/lavr/portreach/internal/i18n"
+	"github.com/lavr/portreach/internal/ratelimit"
 )
 
 //go:embed web/index.html
@@ -115,7 +116,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			if retry, ok := s.allow(r, target); !ok {
 				// Over limit: render the form with a localized throttle message and
 				// a Retry-After header, mirroring the JSON API's 429.
-				ra := retryAfterSeconds(retry)
+				ra := ratelimit.RetryAfterSeconds(retry)
 				w.Header().Set("Retry-After", ra)
 				data.Error = loc.T("error.rate_limited", ra)
 				status = http.StatusTooManyRequests

@@ -130,7 +130,7 @@ func (s *Server) handleAPICheck(w http.ResponseWriter, r *http.Request) {
 	}
 	// Gate before any discovery/fan-out work so a throttled request is cheap.
 	if retry, ok := s.allow(r, target); !ok {
-		ra := retryAfterSeconds(retry)
+		ra := ratelimit.RetryAfterSeconds(retry)
 		w.Header().Set("Retry-After", ra)
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{
 			"error":       "rate limit exceeded",

@@ -14,6 +14,7 @@ package ratelimit
 import (
 	"fmt"
 	"math"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -128,7 +129,7 @@ type Limiter struct {
 	target *registry     // nil when the target scope is disabled
 	global *rate.Limiter // nil when the global scope is disabled
 
-	proxies         []prefix
+	proxies         []netip.Prefix
 	forwardedHeader string
 
 	mu    sync.Mutex

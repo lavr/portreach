@@ -125,6 +125,33 @@ func TestCheckAllUnlimitedConcurrency(t *testing.T) {
 	}
 }
 
+// TestCheckAllConcurrencyAtAndAboveAgentCount covers the boundary the bounded and
+// unlimited cases miss: a positive cap >= len(agents). Per the semaphore guard
+// (maxConcurrent < len(agents)), no semaphore is built, so every agent runs
+// concurrently and nothing deadlocks — pinning the off-by-one zone the
+// "never build a zero-capacity channel" comment warns about.
+func TestCheckAllConcurrencyAtAndAboveAgentCount(t *testing.T) {
+	for _, limit := range []int{5, 9} { // == len and > len
+		var inFlight, maxSeen int64
+		srv := countingAgent(t, &inFlight, &maxSeen)
+
+		a := addr(srv)
+		agents := make([]discovery.Agent, 5)
+		for i := range agents {
+			agents[i] = discovery.Agent{Addr: a}
+		}
+
+		results := CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "", limit)
+		if len(results) != 5 {
+			t.Fatalf("cap %d: got %d results, want 5", limit, len(results))
+		}
+		if got := atomic.LoadInt64(&maxSeen); got != 5 {
+			t.Errorf("cap %d: max concurrent = %d, want 5 (no semaphore at/above agent count)", limit, got)
+		}
+		srv.Close()
+	}
+}
+
 // TestAPICheckReportsFanoutCounts proves the cap surfaces explicit
 // discovered/queried/dropped counts (and Summary.Total = queried) over /api/check.
 func TestAPICheckReportsFanoutCounts(t *testing.T) {

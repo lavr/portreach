@@ -276,6 +276,144 @@ func TestIdleBucketsEvicted(t *testing.T) {
 	}
 }
 
+// TestGlobalScopeThrottlesAcrossUsersAndTargets proves the process-global bucket
+// gates a request as the *sole* decider: with the per-user and per-target scopes
+// disabled and every request crossing a distinct user AND target, the (burst+1)th
+// is still denied. A regression dropping the global consideration from Reserve
+// would let it through — the over-limit rollback test alone would not catch that.
+func TestGlobalScopeThrottlesAcrossUsersAndTargets(t *testing.T) {
+	clk := newClock()
+	l := mustNew(t, Config{
+		Enabled: true,
+		Global:  Scope{Rate: 0.001, Burst: 2}, // 2 then effectively locked
+	}, WithClock(clk.now))
+
+	if r := l.Reserve("user-a", "t-a"); !r.OK {
+		t.Fatal("first global token should pass")
+	}
+	if r := l.Reserve("user-b", "t-b"); !r.OK {
+		t.Fatal("second global token should pass")
+	}
+	// A third distinct identity/target pair is denied — only the global bucket is
+	// in play, so it must be the gate.
+	r := l.Reserve("user-c", "t-c")
+	if r.OK {
+		t.Fatal("global bucket should deny the third request regardless of user/target")
+	}
+	if r.RetryAfter <= 0 {
+		t.Fatalf("retry-after = %v, want > 0", r.RetryAfter)
+	}
+}
+
+// TestPeriodicEvictionSweepsIdleBuckets drives Reserve enough times to trip the
+// evictEvery sweep — the production path, since callers never invoke evictIdle
+// directly — and asserts an idle key's bucket is gone while an active key's
+// survives. This exercises maybeEvict's due-branch end to end, not the helper.
+func TestPeriodicEvictionSweepsIdleBuckets(t *testing.T) {
+	clk := newClock()
+	l := mustNew(t, Config{
+		Enabled: true,
+		User:    Scope{Rate: 1000, Burst: 1000}, // generous: never the limiting factor
+		IdleTTL: time.Minute,
+	}, WithClock(clk.now))
+
+	// Create a bucket for an idle key, then age it past the TTL.
+	l.Reserve("idle", "t")
+	if l.user.len() != 1 {
+		t.Fatalf("expected 1 bucket after first use, got %d", l.user.len())
+	}
+	clk.advance(2 * time.Minute)
+
+	// Drive Reserve under a *different*, active key until the periodic sweep fires
+	// (calls % evictEvery == 0). The idle key is never touched again, so it should
+	// be swept; the active key, refreshed each call, survives.
+	for i := 0; i < evictEvery; i++ {
+		l.Reserve("active", "t")
+	}
+	if l.user.peek("idle") != nil {
+		t.Errorf("idle bucket should be swept by the periodic eviction, still present")
+	}
+	if l.user.peek("active") == nil {
+		t.Errorf("active bucket should survive eviction")
+	}
+}
+
+// TestImpossibleReservationRollsBackHealthyBuckets proves the impossible branch
+// (n > burst, r.OK() false) still cancels the sibling reservations it tentatively
+// took: a healthy user bucket paired with an impossible global bucket must be left
+// at full tokens after the denied Reserve. This pins the "all cancelled if any
+// denies" invariant for the !OK() path, which the single-bucket case cannot.
+func TestImpossibleReservationRollsBackHealthyBuckets(t *testing.T) {
+	clk := newClock()
+	l := &Limiter{
+		enabled: true,
+		maxWait: defaultMaxWait,
+		idleTTL: defaultIdleTTL,
+		now:     clk.now,
+		user:    newRegistry(Scope{Rate: 1, Burst: 5}),
+		global:  rate.NewLimiter(1, 0), // burst 0 → every reservation impossible
+	}
+	now := clk.now()
+	if r := l.Reserve("a", "t"); r.OK {
+		t.Fatal("reservation must be denied by the impossible global bucket")
+	}
+	if got := l.user.peek("a").TokensAt(now); got != 5 {
+		t.Errorf("healthy user bucket = %v tokens, want 5 (impossible sibling rolled back)", got)
+	}
+}
+
+// TestClientIPEdgeCases covers the keying fallbacks the happy-path proxy test
+// misses: an all-trusted-proxy chain falls back to the direct peer, an unparseable
+// forwarded entry is skipped, and a RemoteAddr with no port is returned raw. These
+// are the security-keying surface — a mis-key here lets one client masquerade as
+// many.
+func TestClientIPEdgeCases(t *testing.T) {
+	l := mustNew(t, Config{
+		Enabled:        true,
+		User:           Scope{Rate: 1, Burst: 1},
+		TrustedProxies: []string{"10.0.0.0/8"},
+	}, WithClock(newClock().now))
+
+	// Every hop in the chain is a trusted proxy → fall back to the direct peer.
+	req := httpReq("10.1.2.3:5000", "X-Forwarded-For", "10.9.9.9, 10.4.5.6")
+	if got := l.ClientIP(req); got != "10.1.2.3" {
+		t.Errorf("all-proxy chain: ClientIP = %q, want the peer 10.1.2.3", got)
+	}
+
+	// A trailing unparseable entry is skipped; the first valid non-proxy wins.
+	req = httpReq("10.1.2.3:5000", "X-Forwarded-For", "203.0.113.9, garbage")
+	if got := l.ClientIP(req); got != "203.0.113.9" {
+		t.Errorf("malformed entry: ClientIP = %q, want 203.0.113.9", got)
+	}
+
+	// RemoteAddr with no port is returned raw (best-effort), not dropped.
+	req = httpReq("10.1.2.3", "", "")
+	if got := l.ClientIP(req); got != "10.1.2.3" {
+		t.Errorf("no-port RemoteAddr: ClientIP = %q, want 10.1.2.3", got)
+	}
+}
+
+// TestRetryAfterSeconds pins the Retry-After rendering directly on the exported
+// helper (whole seconds rounded up, floored at 1 so a sub-second hint never
+// serializes as "0").
+func TestRetryAfterSeconds(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "1"},                       // floor at 1, never "0"
+		{100 * time.Millisecond, "1"},  // sub-second rounds up
+		{time.Second, "1"},             // exact
+		{1500 * time.Millisecond, "2"}, // rounds up
+		{60 * time.Second, "60"},
+	}
+	for _, c := range cases {
+		if got := RetryAfterSeconds(c.d); got != c.want {
+			t.Errorf("RetryAfterSeconds(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
 func httpReq(remoteAddr, hdr, val string) *http.Request {
 	r, _ := http.NewRequest(http.MethodGet, "/api/check", nil)
 	r.RemoteAddr = remoteAddr

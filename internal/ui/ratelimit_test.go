@@ -245,21 +245,3 @@ func TestIdentityKeyingAuthenticatedUser(t *testing.T) {
 		t.Fatalf("bob = %d, want 200 (separate user, same IP)", code)
 	}
 }
-
-func TestRetryAfterSeconds(t *testing.T) {
-	cases := []struct {
-		d    time.Duration
-		want string
-	}{
-		{0, "1"},                       // floor at 1, never "0"
-		{100 * time.Millisecond, "1"},  // sub-second rounds up
-		{time.Second, "1"},             // exact
-		{1500 * time.Millisecond, "2"}, // rounds up
-		{60 * time.Second, "60"},
-	}
-	for _, c := range cases {
-		if got := retryAfterSeconds(c.d); got != c.want {
-			t.Errorf("retryAfterSeconds(%v) = %q, want %q", c.d, got, c.want)
-		}
-	}
-}

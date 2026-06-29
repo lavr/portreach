@@ -8,15 +8,11 @@ import (
 	"strings"
 )
 
-// prefix is a parsed trusted-proxy entry (a CIDR or a single address).
-type prefix struct{ p netip.Prefix }
-
-func (pp prefix) contains(a netip.Addr) bool { return pp.p.Contains(a) }
-
-// parsePrefixes parses the trusted-proxy list (CIDRs or bare IPs). It is called
-// both by Validate (to surface config errors) and New (to build the parsed set).
-func parsePrefixes(cidrs []string) ([]prefix, error) {
-	out := make([]prefix, 0, len(cidrs))
+// parsePrefixes parses the trusted-proxy list (CIDRs or bare IPs) into prefixes.
+// It is called both by Validate (to surface config errors) and New (to build the
+// parsed set). A bare IP becomes a host-length prefix that matches only itself.
+func parsePrefixes(cidrs []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(cidrs))
 	for _, c := range cidrs {
 		c = strings.TrimSpace(c)
 		if c == "" {
@@ -27,14 +23,14 @@ func parsePrefixes(cidrs []string) ([]prefix, error) {
 			if err != nil {
 				return nil, fmt.Errorf("ratelimit: invalid trusted proxy CIDR %q: %w", c, err)
 			}
-			out = append(out, prefix{p.Masked()})
+			out = append(out, p.Masked())
 			continue
 		}
 		a, err := netip.ParseAddr(c)
 		if err != nil {
 			return nil, fmt.Errorf("ratelimit: invalid trusted proxy address %q: %w", c, err)
 		}
-		out = append(out, prefix{netip.PrefixFrom(a, a.BitLen())})
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
 	}
 	return out, nil
 }
@@ -77,7 +73,7 @@ func (l *Limiter) ClientIP(r *http.Request) string {
 
 func (l *Limiter) trusted(a netip.Addr) bool {
 	for _, p := range l.proxies {
-		if p.contains(a) {
+		if p.Contains(a) {
 			return true
 		}
 	}
