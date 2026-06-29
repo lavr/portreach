@@ -279,11 +279,12 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 - [x] run `go test ./...` — no regression
 
 ### Task 7: Verify acceptance criteria
-- [ ] limiter enforces per-user/per-target/global with reservation rollback and correct
+- [x] limiter enforces per-user/per-target/global with reservation rollback and correct
       `429`+`Retry-After`; disabled = unlimited; fan-out capped with drops reported;
       proxy-aware IP keying correct; metadata denied by default (no behaviour change for
       normal targets) and override works while operator `--deny` wins
-- [ ] `go test ./... -v`, `go vet ./...`, `helm lint` clean; new pkg coverage ≥ 80%
+- [x] `go test ./... -v`, `go vet ./...`, `helm lint` clean; new pkg coverage ≥ 80%
+      (ratelimit 89.0%, ui 90.7%, probe 94.6%, agent 94.3%, cmd 91.1%)
 
 ### Task 8: [Final] Knowledge
 - [ ] note the limiter, bounded fan-out, trusted-proxy, and metadata guard in
