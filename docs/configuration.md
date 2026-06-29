@@ -22,12 +22,16 @@ The probe server. Run one per point you want to check from.
 | `--listen` | `:8732` | address to listen on |
 | `--allow` | *(empty)* | comma-separated allow CIDR list (empty = allow all) |
 | `--deny` | *(empty)* | comma-separated deny CIDR list (takes precedence over allow) |
+| `--auth-token` | *(empty)* | shared bearer token required on `/check` and `/metrics`; empty = open |
+| `--metrics-public` | `false` | leave `/metrics` open even when a token is set (`/check` stays gated) |
 
 Environment:
 
 | Variable | Description |
 |----------|-------------|
 | `NODE_NAME` | point name reported in `/check` responses; falls back to the OS hostname |
+| `PORTREACH_AGENT_TOKEN` | default for `--auth-token` |
+| `PORTREACH_AGENT_METRICS_PUBLIC` | default for `--metrics-public` |
 
 Endpoints:
 
@@ -63,6 +67,41 @@ portreach agent --allow 10.0.0.0/8 --deny 169.254.169.254/32
   addresses dialed); `cname` is not reported, since capturing it would require a
   second lookup that could disagree with the vetted set.
 
+### Agent token (Boundary B — the primary isolation boundary)
+
+Agents are **internal**: developers only ever talk to the UI, and the UI fans
+out to the agents (see ["agents internal, UI is the front door"](#api-bearer-tokens-boundary-a)).
+Because the chart runs the agent on `hostNetwork: true` with a `hostPort` by
+default, its `/check` endpoint is reachable on the node IP, where NetworkPolicy
+is CNI-dependent and frequently **not** enforced. A shared bearer token — not
+NetworkPolicy — is therefore the enforced trust boundary.
+
+Set `--auth-token` (or `PORTREACH_AGENT_TOKEN`) on the agent and the matching
+`--agent-token`/`PORTREACH_AGENT_TOKEN` on the UI:
+
+```sh
+TOKEN=$(openssl rand -hex 32)
+portreach agent --listen :8732 --auth-token "$TOKEN"
+portreach ui --agents agent-a:8732 --agent-token "$TOKEN"
+```
+
+- When set, the agent requires `Authorization: Bearer <token>` on `/check`
+  (and `/metrics`, see below) — missing/wrong → `401`. The compare is
+  constant-time. The UI attaches the header on every probe.
+- **Empty token → open** (today's behaviour, backward compatible). Both sides
+  must carry the same value; a mismatch fails closed with `401`.
+- The same token also protects a **standalone agent** (a VM with no UI) called
+  directly.
+
+#### `/metrics` gating
+
+Because `hostNetwork` exposes `/metrics` on the node, it is gated behind the
+agent token **by default** (same `401` as `/check`). For Prometheus scraping,
+either give the scraper the token, or re-open `/metrics` (only) with
+`--metrics-public` / `PORTREACH_AGENT_METRICS_PUBLIC=true` — a deliberate
+opt-out that leaves `/check` gated. `/healthz` is always open so liveness/
+readiness probes keep working.
+
 ## `portreach ui`
 
 The aggregator and web form. Discovers agents, fans out one target check to all
@@ -75,6 +114,7 @@ of them, and renders a per-point table.
 | `--agents-dns` | `PORTREACH_AGENTS_DNS` | | headless service name to resolve agents from |
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | agent port for DNS-discovered and port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
+| `--agent-token` | `PORTREACH_AGENT_TOKEN` | | shared bearer token sent to agents on `/check`; empty = none ([Boundary B](#agent-token-boundary-b--the-primary-isolation-boundary)) |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | path to the SSO auth config YAML; empty = auth disabled |
 | `--ui-title` | `PORTREACH_UI_TITLE` | localized heading | HTML page heading; explicitly empty suppresses `<h1>` |
 | `--ui-description` | `PORTREACH_UI_DESCRIPTION` | | trusted HTML block under the heading |
@@ -424,7 +464,79 @@ stdout — ready to ingest into an ELK/Loki pipeline. Two event types:
   submitted: `user`, `provider`, `target` (`host:port/proto`), `remote`.
 
 Check events are logged **whether or not auth is enabled**; with auth off the
-actor is recorded as `user=anonymous` (empty `provider`).
+actor is recorded as `user=anonymous` (empty `provider`). Token (bearer) calls
+add an `auth_method=bearer` field; cookie sessions use `auth_method=cookie`.
+
+## API bearer tokens (Boundary A)
+
+The model is **agents internal, the UI is the front door**: humans and CI talk
+only to the UI's `/api/*`, never to the agents. Browser SSO covers humans; for
+**dev/CI automation** the UI also accepts an `Authorization: Bearer <token>` on
+`/api/*`, where the token is an **OIDC access token (JWT)** issued by a
+configured IdP. CI authenticates as an IdP **service account**
+(client-credentials grant) and never needs a browser.
+
+A bearer request and a browser session resolve to the **same** identity, so the
+group allowlist (RBAC), audit log, and rate-limits apply uniformly. The bearer
+path is **independent of browser SSO** and **disabled by default**: configure at
+least one `api` entry to enable it; with none, `/api/*` stays cookie-only (or
+fully open if no auth at all).
+
+> **Scope — OIDC/JWT only.** v1 validates **JWT** access tokens offline via the
+> issuer's JWKS. **GitHub** (OAuth2 + REST, no OIDC/JWKS) and **opaque** access
+> tokens are **unsupported** — a GitHub-only deployment simply has no bearer
+> path. Use an OIDC IdP (Keycloak, Entra, GitLab, Okta, Auth0, …) that issues
+> JWT access tokens.
+
+Add an `api:` list to the same auth-config YAML (it sits next to `providers:`):
+
+```yaml
+auth:
+  # api entries enable the bearer path; no cookieKey / providers are required if
+  # you only want bearer (a headless, CI-only deployment is valid).
+  api:
+    - id: ci                                  # globally unique across api + providers
+      issuer: https://keycloak.corp/realms/main   # discovery base for JWKS
+      audience: portreach                     # required `aud` the token must carry
+      type: ""                                # optional preset (e.g. gitlab) for claim fallbacks
+      usernameClaim: ""                       # default preferred_username, then sub
+      groupsClaim: ""                         # default groups
+      allowedGroups: [ci, sre]                # per-entry group allowlist; empty = any authenticated
+      allowedUsers: []                        # per-entry user allowlist
+```
+
+How a token is validated and bound:
+
+- The token is matched to an entry by its **`(issuer, audience)` pair** — both
+  required, and the pair must be **unique** across entries. `id` must be unique
+  across **both** `api` entries and browser `providers`.
+- The JWT is verified against the issuer's JWKS — **signature + `iss` + `aud`
+  (= `audience`) + `exp`**. Bad signature / wrong issuer / wrong-or-absent
+  audience / expired → **401**.
+- A token whose issuer+audience matches **no** configured entry → **401**, never
+  a pass with an empty allowlist (**fail closed**).
+- The matched entry's `id` becomes the session provider, so the allowlist lookup
+  reads **that entry's** `allowedGroups`/`allowedUsers` (plus the global
+  `allowedUsers`). A non-member → **403**, exactly like a denied browser login.
+- Claims map to the identity via `usernameClaim`/`groupsClaim` (defaults mirror
+  the browser OIDC path; a named `type` pulls its preset's claim fallbacks).
+- All `api`-entry string fields go through the same `${ENV}` expansion as the
+  rest of the config.
+
+Route semantics: on `/api/*`, an auth failure is always a **`401` JSON**
+response (never a redirect to a login page). On browser paths, a failure
+redirects to the login page **only when browser SSO is configured**; in
+**API-only mode** (no `providers`) there is no login page, so `/` also returns
+`401`.
+
+### Revocation and token TTL
+
+JWKS validation is **offline**: portreach checks the signature and `exp` but
+cannot see an IdP-side **deactivation** before the token expires. There is no
+instant-revocation guarantee. Mitigate by configuring a **short access-token
+TTL** at the IdP so a deactivated principal loses access quickly. An optional
+per-call userinfo/introspection re-check (adds latency and a hard IdP
+dependency) is **future work**, not in v1.
 
 ## Localization (i18n)
 

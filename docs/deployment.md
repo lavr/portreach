@@ -141,9 +141,83 @@ For external secret management, set `ui.auth.existingSecret` and omit inline
 `cookieKey` / `clientSecret`. Provider secret env/key names are derived from the
 provider `id` unless `clientSecretEnv` / `clientSecretKey` are set explicitly.
 
+Browser SSO and the **API bearer path** are independent toggles. The chart
+gates the auth ConfigMap on `portreach.auth.enabled` =
+`ui.auth.browser.enabled` **OR** `ui.auth.api.enabled` (the legacy
+`ui.auth.enabled: true` still means browser-enabled). API bearer entries are a
+list mirroring the Go config — enable a headless, CI-only deployment with no
+browser providers:
+
+```yaml
+ui:
+  auth:
+    browser:
+      enabled: false        # no browser login
+    api:
+      enabled: true
+      entries:
+        - id: ci
+          issuer: https://keycloak.corp/realms/main
+          audience: portreach
+          allowedGroups: [ci, sre]
+```
+
 `/healthz` stays public so the liveness/readiness probes keep working. Terminate
 TLS at the ingress so the `Secure` session cookie is sent. See the auth-config
-reference in [`configuration.md`](configuration.md#authentication-optional-sso).
+reference in [`configuration.md`](configuration.md#authentication-optional-sso)
+and the [API bearer model](configuration.md#api-bearer-tokens-boundary-a).
+
+### Agent token (shared Secret)
+
+The agent is the **primary** isolation boundary, enforced by a shared bearer
+token (not NetworkPolicy — see below). Set `agent.auth.token`; the chart renders
+a Secret and injects `PORTREACH_AGENT_TOKEN` into **both** the agent DaemonSet
+and the UI Deployment, so the UI sends exactly what the agent requires:
+
+```yaml
+agent:
+  auth:
+    token: "<openssl rand -hex 32>"   # chart-managed Secret
+    # existingSecret: my-agent-token  # or reference an out-of-band Secret
+    tokenSecretKey: agent-token       # key the token lives under
+  metricsPublic: false                # /metrics gated behind the token (default)
+```
+
+- **Rotation.** For the chart-managed `token`, a checksum annotation on both pod
+  templates means a value change triggers a rollout automatically. With
+  `existingSecret`, rotating the Secret value needs a **manual rollout**
+  (`kubectl rollout restart`) of both workloads — the annotation only tracks
+  chart-rendered values.
+- **`existingSecret` is mutually exclusive with `token`.** Store the token under
+  `tokenSecretKey` (default `agent-token`).
+- `agent.metricsPublic: true` re-opens `/metrics` for Prometheus while keeping
+  `/check` gated (see [/metrics gating](configuration.md#metrics-gating)).
+
+### NetworkPolicy (best-effort) and strict isolation
+
+`networkPolicy.enabled` is **opt-in** and, on the default `hostNetwork: true`
+agent, **best-effort only**: NetworkPolicy is CNI-dependent and frequently
+**not** enforced for host-networked pods. Treat the **agent token** as the real
+boundary; NetworkPolicy is defence-in-depth at most.
+
+For NP-**enforced** isolation, move the agent onto the pod network:
+
+```yaml
+agent:
+  network:
+    hostNetwork: false
+    hostPort:
+      enabled: false
+networkPolicy:
+  enabled: true
+```
+
+> **Trade-off — egress vantage point.** On the pod network the probe egresses
+> from the **pod** IP (via the CNI/SNAT path), not the **node** IP. The
+> reachability results then reflect pod-network egress, which may differ from
+> what a workload sees from the node. Use the default `hostNetwork: true` when
+> you need true per-node egress; opt into the pod-network mode only when
+> NP-enforced isolation matters more than the node vantage point.
 
 ## Docker / static list
 

@@ -240,17 +240,17 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 - [x] run tests — must pass before Task 6
 
 ### Task 6: Documentation
-- [ ] `docs/configuration.md`: API bearer (obtain a JWT access token; CI
+- [x] `docs/configuration.md`: API bearer (obtain a JWT access token; CI
       client-credentials; required `aud`); **explicitly: OIDC/JWT only, GitHub &
       opaque tokens unsupported**; agent token + `tokenSecretKey`; the
       "agents internal, UI is the front door" model; `/metrics` gating + opt-out;
       **revocation/TTL note** (deactivation visible only at token expiry → use short
       access-token TTL; optional userinfo re-check is future work)
-- [ ] `docs/deployment.md`: Helm example wiring the shared Secret; NetworkPolicy as
+- [x] `docs/deployment.md`: Helm example wiring the shared Secret; NetworkPolicy as
       best-effort under hostNetwork + the strict non-hostNetwork mode + rollout-on-
       rotation note
-- [ ] `README.md`: short "API access (tokens)" note
-- [ ] run `go test ./...` — no regression
+- [x] `README.md`: short "API access (tokens)" note
+- [x] run `go test ./...` — no regression
 
 ### Task 7: Verify acceptance criteria
 - [ ] both boundaries enforced; both default-off paths backward compatible
