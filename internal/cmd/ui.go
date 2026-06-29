@@ -25,6 +25,7 @@ func runUI(args []string, deps Deps) error {
 	agentPort := fs.Int("agent-port", envInt("PORTREACH_AGENT_PORT", 8732), "agent port for DNS-discovered and port-less agents (env PORTREACH_AGENT_PORT)")
 	timeout := fs.Duration("timeout", 8*time.Second, "overall fan-out budget per check")
 	authConfig := fs.String("auth-config", os.Getenv("PORTREACH_AUTH_CONFIG"), "path to SSO auth config YAML; empty = auth disabled (env PORTREACH_AUTH_CONFIG)")
+	agentToken := fs.String("agent-token", os.Getenv("PORTREACH_AGENT_TOKEN"), "shared bearer token sent to agents on /check; empty = no token (env PORTREACH_AGENT_TOKEN)")
 	uiTitle := fs.String("ui-title", os.Getenv("PORTREACH_UI_TITLE"), "HTML page heading; empty when explicitly set suppresses it (env PORTREACH_UI_TITLE)")
 	uiDescription := fs.String("ui-description", os.Getenv("PORTREACH_UI_DESCRIPTION"), "HTML block rendered under the page heading (env PORTREACH_UI_DESCRIPTION)")
 	uiFooter := fs.String("ui-footer", os.Getenv("PORTREACH_UI_FOOTER"), "HTML footer block rendered at the bottom of the page (env PORTREACH_UI_FOOTER)")
@@ -54,7 +55,7 @@ func runUI(args []string, deps Deps) error {
 		Footer: expandEnv(resolveString(fs, "login-footer", loginFooter, "PORTREACH_LOGIN_FOOTER")),
 	}
 
-	handler, err := buildUIHandler(disc, *timeout, *authConfig, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
+	handler, err := buildUIHandler(disc, *timeout, *authConfig, *agentToken, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
 	if err != nil {
 		return &ExitError{Code: 2, Err: err}
 	}
@@ -77,14 +78,14 @@ type handlerBranding struct {
 	login auth.LoginBranding
 }
 
-func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath string, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
+func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath, agentToken string, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
 	var branding handlerBranding
 	if len(brandings) > 0 {
 		branding = brandings[0]
 	}
 	// Audit events go to stdout as JSON for the ИБ log pipeline (ELK/Loki).
 	logger := slog.New(slog.NewJSONHandler(out, nil))
-	handler := ui.New(disc, timeout, ui.WithBranding(branding.ui)).Handler()
+	handler := ui.New(disc, timeout, ui.WithBranding(branding.ui), ui.WithAgentToken(agentToken)).Handler()
 	// Audit every reachability check, attributing it to the authenticated user
 	// (or anonymous when auth is off, since no identity reaches the context).
 	audited := auth.AuditCheck(logger, handler)

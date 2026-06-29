@@ -196,12 +196,12 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 - [x] run tests — must pass before Task 4
 
 ### Task 4: UI sends the agent token
-- [ ] `internal/cmd/ui.go`: read agent token (`--agent-token`/`PORTREACH_AGENT_TOKEN`),
+- [x] `internal/cmd/ui.go`: read agent token (`--agent-token`/`PORTREACH_AGENT_TOKEN`),
       thread into `ui.Server`/aggregator
-- [ ] `internal/ui/aggregator.go` `checkOne`: set `Authorization: Bearer <token>` when
+- [x] `internal/ui/aggregator.go` `checkOne`: set `Authorization: Bearer <token>` when
       configured; empty → no header (compat)
-- [ ] write tests: aggregator attaches the header; empty token → no header
-- [ ] run tests — must pass before Task 5
+- [x] write tests: aggregator attaches the header; empty token → no header
+- [x] run tests — must pass before Task 5
 
 ### Task 5: Helm wiring (Secret + rotation + optional strict isolation)
 - [ ] **chart auth model + toggle migration (#R2 + High #2 + Medium toggle)**: add a

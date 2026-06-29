@@ -37,7 +37,7 @@ const validGitHubConfig = `auth:
 
 func TestBuildUIHandlerNoAuthConfig(t *testing.T) {
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, "", &out)
+	h, err := buildUIHandler(nil, time.Second, "", "", &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestBuildUIHandlerDisabledConfigIsOpen(t *testing.T) {
 	// A config file with no providers is valid and leaves the UI unauthenticated.
 	path := writeAuthConfig(t, "auth:\n  allowedUsers: []\n")
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", &out)
 	if err != nil {
 		t.Fatalf("disabled config should not error: %v", err)
 	}
@@ -76,13 +76,13 @@ func TestBuildUIHandlerInvalidConfigErrors(t *testing.T) {
       type: github
       clientID: cid
 `)
-	if _, err := buildUIHandler(nil, time.Second, path, &bytes.Buffer{}); err == nil {
+	if _, err := buildUIHandler(nil, time.Second, path, "", &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error for invalid (enabled) auth config")
 	}
 }
 
 func TestBuildUIHandlerMissingConfigFileErrors(t *testing.T) {
-	if _, err := buildUIHandler(nil, time.Second, "/no/such/auth.yaml", &bytes.Buffer{}); err == nil {
+	if _, err := buildUIHandler(nil, time.Second, "/no/such/auth.yaml", "", &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error for missing auth config file")
 	}
 }
@@ -90,7 +90,7 @@ func TestBuildUIHandlerMissingConfigFileErrors(t *testing.T) {
 func TestBuildUIHandlerEnabledGatesAndAnnounces(t *testing.T) {
 	path := writeAuthConfig(t, validGitHubConfig)
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", &out)
 	if err != nil {
 		t.Fatalf("valid config should not error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestBuildUIHandlerAPIOnlyEnablesBearerGate(t *testing.T) {
 
 	path := writeAuthConfig(t, "auth:\n  api:\n    - id: ci\n      issuer: "+srv.URL+"\n      audience: portreach\n")
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", &out)
 	if err != nil {
 		t.Fatalf("bearer-only config should build: %v", err)
 	}

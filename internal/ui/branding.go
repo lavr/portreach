@@ -20,3 +20,12 @@ func WithBranding(b Branding) Option {
 		s.branding = b
 	}
 }
+
+// WithAgentToken sets the shared bearer token sent to agents on every /check
+// call. An empty token leaves agent requests unauthenticated (backward
+// compatible with agents that require no token).
+func WithAgentToken(token string) Option {
+	return func(s *Server) {
+		s.agentToken = token
+	}
+}

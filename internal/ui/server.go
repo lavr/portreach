@@ -11,10 +11,11 @@ import (
 
 // Server serves the UI aggregator HTTP endpoints.
 type Server struct {
-	disc     discovery.Discoverer
-	client   *http.Client
-	timeout  time.Duration
-	branding Branding
+	disc       discovery.Discoverer
+	client     *http.Client
+	timeout    time.Duration
+	branding   Branding
+	agentToken string
 }
 
 // New builds a UI Server. timeout bounds the whole fan-out budget; a
@@ -154,7 +155,7 @@ func (s *Server) handleAPICheck(w http.ResponseWriter, r *http.Request) {
 	// real probe attempt rather than an automatic failure.
 	target.Timeout = clampTimeout(target.Timeout, remainingBudget(ctx, s.timeout))
 
-	results := CheckAll(ctx, s.client, agents, target)
+	results := CheckAll(ctx, s.client, agents, target, s.agentToken)
 	writeJSON(w, http.StatusOK, Response{
 		Target:  target,
 		Agents:  results,

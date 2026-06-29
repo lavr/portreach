@@ -125,7 +125,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 				// budget remaining after discovery so the UI's own deadline
 				// can't pre-empt clean per-node results.
 				target.Timeout = clampTimeout(target.Timeout, remainingBudget(ctx, s.timeout))
-				data.Results = CheckAll(ctx, s.client, agents, target)
+				data.Results = CheckAll(ctx, s.client, agents, target, s.agentToken)
 				data.Summary = Summarize(data.Results)
 				// Normalize echoed port to the validated value.
 				data.Port = strconv.Itoa(target.Port)
