@@ -69,6 +69,28 @@ spec:
             {{- if .Values.agent.metricsPublic }}
             - --metrics-public
             {{- end }}
+            {{- if .Values.agent.targetPolicy.allowMetadata }}
+            - --allow-metadata
+            {{- end }}
+            {{- if .Values.agent.rateLimit.enabled }}
+            - --rate-limit
+            {{- with .Values.agent.rateLimit.target.rate }}
+            - --rate-target-rate
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.agent.rateLimit.target.burst }}
+            - --rate-target-burst
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.agent.rateLimit.global.rate }}
+            - --rate-global-rate
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.agent.rateLimit.global.burst }}
+            - --rate-global-burst
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.agent.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

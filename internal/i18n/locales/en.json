@@ -21,6 +21,7 @@
   "error.host_required": "host is required",
   "error.bad_port": "invalid port",
   "error.bad_timeout": "invalid timeout",
+  "error.rate_limited": "rate limit exceeded — retry in %s seconds",
 
   "auth.login.title": "Sign in",
   "auth.login.heading": "Sign in to portreach",

@@ -123,77 +123,77 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 ## Implementation Steps
 
 ### Task 1: Rate-limiter core (reservation-based, multi-bucket)
-- [ ] add `golang.org/x/time/rate`; `go mod tidy` (commit `go.sum`)
-- [ ] new `internal/ratelimit`: registries for user, target (`host:port`), and global
+- [x] add `golang.org/x/time/rate`; `go mod tidy` (commit `go.sum`)
+- [x] new `internal/ratelimit`: registries for user, target (`host:port`), and global
       buckets (rate/burst per scope); injectable clock
-- [ ] **config validation (#R6), enabled-gated (Medium)**: a disabled/unset limiter
+- [x] **config validation (#R6), enabled-gated (Medium)**: a disabled/unset limiter
       (zero defaults) is **valid** (no-op). The positive checks (rate > 0, burst ≥ 1, sane
       global, reject `n > burst`) apply **only when the limiter is enabled/configured** —
       so the default-off config passes `Validate()` and only a half-configured limiter is
       rejected
-- [ ] `Reserve(identityKey, targetKey) (Reservation, ok, retryAfter)`: take a
+- [x] `Reserve(identityKey, targetKey) (Reservation, ok, retryAfter)`: take a
       reservation from **each** applicable bucket; if any is not immediately OK,
       **Cancel() all** taken reservations and return `ok=false` with the max delay as
       `retryAfter` (finding #7) — never partially consume
-- [ ] **bounded fallback (#R6)**: a reservation that is not OK or whose `Delay()` is
+- [x] **bounded fallback (#R6)**: a reservation that is not OK or whose `Delay()` is
       `+Inf`/exceeds a max wait is treated as an immediate reject with a **capped**
       `Retry-After` (never a hang or an unbounded value)
-- [ ] identity key = authenticated user when present, else proxy-aware client IP
+- [x] identity key = authenticated user when present, else proxy-aware client IP
       (finding #8): trust a forwarded header only when `RemoteAddr` ∈ configured
       trusted-proxy CIDRs, else use `RemoteAddr`
-- [ ] idle buckets evicted to bound memory
-- [ ] write tests (fake clock): allow→deny at limit; per-user and per-target isolation;
+- [x] idle buckets evicted to bound memory
+- [x] write tests (fake clock): allow→deny at limit; per-user and per-target isolation;
       **denied request leaves other buckets untouched**; refill over time;
       trusted-proxy header honoured only from trusted source; **disabled/default config
       passes Validate (no-op)**; **invalid configs rejected only when enabled** (burst 0,
       negative rate, n > burst); **impossible reservation → capped Retry-After reject, no
       hang**
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Wire limiter + proxy-aware client IP into the UI API
-- [ ] `internal/cmd/ui.go`: build limiter + trusted-proxy config from flags/env
+- [x] `internal/cmd/ui.go`: build limiter + trusted-proxy config from flags/env
       (`--rate-*`, `--trusted-proxies`); unset limiter = no-op (unlimited)
-- [ ] wrap `/` (on submit) and `/api/check`: over limit → `429` + `Retry-After`
+- [x] wrap `/` (on submit) and `/api/check`: over limit → `429` + `Retry-After`
       (JSON for `/api/check`, page message for `/`)
-- [ ] emit an audit event on throttle (user/IP, target, reason)
-- [ ] write tests (`httptest`): 429 + `Retry-After` over limit; under limit passes;
+- [x] emit an audit event on throttle (user/IP, target, reason)
+- [x] write tests (`httptest`): 429 + `Retry-After` over limit; under limit passes;
       disabled = unlimited; client-IP keying uses the right source behind/without proxy
-- [ ] run tests — must pass before Task 3
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Bound the per-check fan-out
-- [ ] add `maxAgentsPerCheck` (config, **default `0` = unlimited**, #R4) and a worker
+- [x] add `maxAgentsPerCheck` (config, **default `0` = unlimited**, #R4) and a worker
       pool to `CheckAll` (`internal/ui/aggregator.go`)
-- [ ] **`maxConcurrentFanout` default + validation (Medium)**: define `0`/unset =
+- [x] **`maxConcurrentFanout` default + validation (Medium)**: define `0`/unset =
       **unlimited concurrency** (today's goroutine-per-agent, no pool — preserves current
       behaviour); `> 0` = bounded pool of that size; **reject negative** in
       `Config.Validate()`. Never spawn a zero-worker pool (would hang)
-- [ ] when `maxAgentsPerCheck > 0` and discovery returns more agents than the cap,
+- [x] when `maxAgentsPerCheck > 0` and discovery returns more agents than the cap,
       **sort agents deterministically by `Addr`** (`discovery.Agent` has no `Node`
       pre-request), query the first N — no silent truncation
-- [ ] **explicit response contract (Medium)**: today `Summary.Total = len(results)`
+- [x] **explicit response contract (Medium)**: today `Summary.Total = len(results)`
       (`aggregator.go:119`) — after a cap that would silently become the *queried* count.
       Add explicit `discovered` / `queried` / `dropped` counts to the response (and
       define `Summary.Total` = queried), so partial results are unambiguous; mirror in the
       audit event
-- [ ] update README/docs wording so the "from every node" promise notes the optional cap
-- [ ] write tests: default `0` queries all (compat); `maxConcurrentFanout` 0/unset =
+- [x] update README/docs wording so the "from every node" promise notes the optional cap
+- [x] write tests: default `0` queries all (compat); `maxConcurrentFanout` 0/unset =
       unlimited, `> 0` bounds concurrency, **negative rejected by Validate**; cap enforced
       with **stable selection**; **`discovered`/`queried`/`dropped` correct** under and
       over the cap
-- [ ] run tests — must pass before Task 4
+- [x] run tests — must pass before Task 4
 
 ### Task 4: Default-deny cloud metadata (connect-time guard, not policy-mode)
-- [ ] **define the probe↔agent contract first (#R5)**: `probe.Run` returns only a
+- [x] **define the probe↔agent contract first (#R5)**: `probe.Run` returns only a
       `Result` and `handleCheck` currently writes HTTP 200 + counts fail
       (`probe.go:109`, `agent.go:194`). Add an explicit typed status to `Result` — e.g.
       `Result.Denied bool` (+ `Result.DeniedReason string`) — so a connect-guard refusal
       is distinguishable from a generic dial failure **without** changing `Run`'s
       "Result-only, never errors except invalid input" contract
-- [ ] **JSON wire-compat (Low #5)**: `probe.Result` is serialized straight to the API
+- [x] **JSON wire-compat (Low #5)**: `probe.Result` is serialized straight to the API
       (`probe.go:56`); the new fields **must** use `json:"denied,omitempty"` /
       `json:"denied_reason,omitempty"` so a normal (non-denied) response is byte-identical
       to today. Add a test asserting normal-response JSON gains no new keys
-- [ ] `internal/probe`: connect guard on the dial path via `net.Dialer.Control` rejects
+- [x] `internal/probe`: connect guard on the dial path via `net.Dialer.Control` rejects
       connects whose resolved IP ∈ a deny set. A `Control` rejection is a **candidate-level**
       signal (recorded via the shared flag), **not** an immediate `Result.Denied`:
       `Run` promotes it to `Result.Denied=true` (+ reason) **only when the overall dial
@@ -201,7 +201,7 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       the guard. If an allowed sibling still connected (`TCP.OK == true`), a candidate-level
       denial **must not** surface as `Result.Denied` — it stays a normal OK result (per the
       narrowed semantics below)
-- [ ] **concurrency-safe guard signal (Medium)**: `Control` can fire from multiple
+- [x] **concurrency-safe guard signal (Medium)**: `Control` can fire from multiple
       goroutines at once — `probe.dial` runs a worker pool of `DialContext` calls
       (`probe.go:223`) and `net.Dialer` itself may stagger Happy-Eyeballs attempts — so the
       guard-hit signal **must not** be a plain `bool`/`string` (data race; `go test -race`
@@ -210,7 +210,7 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       typed-error path returned from `Control` that `Run` inspects after the dial. `Run`
       reads the atomic **after** the dial completes, then applies the `out.OK == false`
       gate above. Run the package under `-race`
-- [ ] **mixed-address semantics — what the connect guard actually guarantees (High)**:
+- [x] **mixed-address semantics — what the connect guard actually guarantees (High)**:
       the guard's hard property is that **a connection to a denied IP is never
       established** — `Control` runs before every connection `net.Dialer` actually
       attempts, so a denied address is refused at connect. It does **not** guarantee
@@ -232,18 +232,18 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       denied-wins *reporting* is ever required: pre-resolve the set and check it like
       policy mode — rejected here because it reintroduces the duplicate-lookup, rebinding
       window, and lost CNAME/DNS-error reporting that finding #6 deliberately avoids.)
-- [ ] `internal/agent`: by default install a guard for the **whole IPv4 link-local
+- [x] `internal/agent`: by default install a guard for the **whole IPv4 link-local
       range `169.254.0.0/16`** (covers IMDS `169.254.169.254`, ECS `169.254.170.2`, etc.)
       **+ IPv6 `fd00:ec2::254`**; `--allow-metadata` (chart
       `agent.targetPolicy.allowMetadata`) removes only this built-in guard; operator
       `--deny` / `Policy` is unchanged and still applies/wins
-- [ ] **`handleCheck` inspects `res.Denied`** and routes it to the existing
+- [x] **`handleCheck` inspects `res.Denied`** and routes it to the existing
       policy-denial path: increment the `denied` metric and return the same denial
       response shape/status as a `resolveTarget` policy deny (`agent.go:176`), so
       metadata and policy denials are identical to clients (document the HTTP status)
-- [ ] **do not** enable `resolveTarget` policy-mode for open deployments — the guard is
+- [x] **do not** enable `resolveTarget` policy-mode for open deployments — the guard is
       independent of `Policy.empty()`
-- [ ] write tests: metadata IP refused at connect → **typed denial, `denied` metric
+- [x] write tests: metadata IP refused at connect → **typed denial, `denied` metric
       incremented, denial-shaped response** (not a generic TCP error); **name resolving
       only to a denied IP → `Result.Denied=true`** (no connection established); **a denied
       IP is never successfully connected to even when a mixed RRset has an allowed sibling**
@@ -253,40 +253,41 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       never attempt the denied IP, per the narrowed semantics above); **plain hostname
       still dials, reports CNAME and DNS errors exactly as today** (compat); `allowMetadata`
       re-enables; operator `--deny` still wins
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: Optional agent-side limiter + Helm wiring
-- [ ] `internal/cmd/agent.go`: `--rate-*` per-process/per-target cap on `/check`
+- [x] `internal/cmd/agent.go`: `--rate-*` per-process/per-target cap on `/check`
       (defence in depth for direct calls); unset = unlimited
-- [ ] `values.yaml`+`values.schema.json`: `ui.rateLimit` / `agent.rateLimit`
+- [x] `values.yaml`+`values.schema.json`: `ui.rateLimit` / `agent.rateLimit`
       (enabled, rate, burst, global, `maxAgentsPerCheck`, `maxConcurrentFanout`),
       `ui.trustedProxies`, and `agent.targetPolicy.allowMetadata` (default false → denied)
-- [ ] render the `--rate-*` / `--trusted-proxies` / metadata flags; ensure the metadata
+- [x] render the `--rate-*` / `--trusted-proxies` / metadata flags; ensure the metadata
       guard is on unless `allowMetadata: true`
-- [ ] extend `internal/charttest` (limiter+fanout+proxy args; metadata guard default-on,
+- [x] extend `internal/charttest` (limiter+fanout+proxy args; metadata guard default-on,
       off when allowed); `helm lint`
-- [ ] write tests for the agent limiter (throttles over limit, open when unset)
-- [ ] run tests — must pass before Task 6
+- [x] write tests for the agent limiter (throttles over limit, open when unset)
+- [x] run tests — must pass before Task 6
 
 ### Task 6: Documentation
-- [ ] `docs/configuration.md`: rate-limit knobs (per-user/per-target/global,
+- [x] `docs/configuration.md`: rate-limit knobs (per-user/per-target/global,
       reservation/429/`Retry-After`), `maxAgentsPerCheck` + fan-out bounding,
       trusted-proxy config (and that per-IP keying needs it / prefer auth), and the
       metadata default-deny + override semantics (operator `--deny` always wins)
-- [ ] `docs/deployment.md`: recommend enabling the limiter + trusted-proxies behind an
+- [x] `docs/deployment.md`: recommend enabling the limiter + trusted-proxies behind an
       Ingress; security note on metadata
-- [ ] `README.md`: brief mention under security
-- [ ] run `go test ./...` — no regression
+- [x] `README.md`: brief mention under security
+- [x] run `go test ./...` — no regression
 
 ### Task 7: Verify acceptance criteria
-- [ ] limiter enforces per-user/per-target/global with reservation rollback and correct
+- [x] limiter enforces per-user/per-target/global with reservation rollback and correct
       `429`+`Retry-After`; disabled = unlimited; fan-out capped with drops reported;
       proxy-aware IP keying correct; metadata denied by default (no behaviour change for
       normal targets) and override works while operator `--deny` wins
-- [ ] `go test ./... -v`, `go vet ./...`, `helm lint` clean; new pkg coverage ≥ 80%
+- [x] `go test ./... -v`, `go vet ./...`, `helm lint` clean; new pkg coverage ≥ 80%
+      (ratelimit 89.0%, ui 90.7%, probe 94.6%, agent 94.3%, cmd 91.1%)
 
 ### Task 8: [Final] Knowledge
-- [ ] note the limiter, bounded fan-out, trusted-proxy, and metadata guard in
+- [x] note the limiter, bounded fan-out, trusted-proxy, and metadata guard in
       README/AGENTS.md
 
 *Note: ralphex auto-moves completed plans to `docs/plans/completed/`.*

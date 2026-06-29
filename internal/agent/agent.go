@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lavr/portreach/internal/probe"
+	"github.com/lavr/portreach/internal/ratelimit"
 )
 
 // Policy restricts which target IPs an agent may connect to, mitigating use of
@@ -59,6 +60,27 @@ func (p *Policy) empty() bool {
 	return len(p.allow) == 0 && len(p.deny) == 0
 }
 
+// metadataNets are the link-local / cloud-metadata networks the agent refuses to
+// connect to by default. The whole IPv4 link-local range 169.254.0.0/16 is denied
+// (deliberately broader than the single metadata IP — it covers AWS/GCP/Azure IMDS
+// 169.254.169.254, ECS task metadata 169.254.170.2, and any other link-local
+// target), plus the IPv6 IMDS address fd00:ec2::254. The guard runs at connect
+// time, independent of the operator Policy, and is removed only by
+// WithAllowMetadata.
+func metadataNets() []*net.IPNet {
+	cidrs := []string{"169.254.0.0/16", "fd00:ec2::254/128"}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		// Static, known-good CIDRs: a parse failure is a programming error.
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic("agent: invalid metadata CIDR " + c + ": " + err.Error())
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}
+
 // Allowed reports whether connecting to ip is permitted.
 func (p *Policy) Allowed(ip net.IP) bool {
 	for _, n := range p.deny {
@@ -78,10 +100,11 @@ func (p *Policy) Allowed(ip net.IP) bool {
 }
 
 type metrics struct {
-	ok     atomic.Int64
-	fail   atomic.Int64
-	denied atomic.Int64
-	badReq atomic.Int64
+	ok        atomic.Int64
+	fail      atomic.Int64
+	denied    atomic.Int64
+	badReq    atomic.Int64
+	throttled atomic.Int64
 }
 
 // ipResolver resolves a hostname to its IP addresses. *net.Resolver satisfies
@@ -96,6 +119,19 @@ type Server struct {
 	policy   *Policy
 	resolver ipResolver
 	metrics  metrics
+
+	// guard is the connect-time deny guard applied to every probe dial. By default
+	// it denies the cloud-metadata / link-local set (see metadataNets); nil when
+	// WithAllowMetadata removed it. It is independent of policy — operator --deny
+	// still applies and wins.
+	guard *probe.DenyGuard
+	// allowMetadata, when set via WithAllowMetadata, removes the built-in metadata
+	// guard. The operator Policy (--deny) is unaffected.
+	allowMetadata bool
+
+	// limiter, when non-nil, gates /check as defence-in-depth for direct calls
+	// (see WithLimiter). Nil = unlimited, the backward-compatible default.
+	limiter *ratelimit.Limiter
 
 	// token, when non-empty, is the shared bearer secret required on /check and
 	// (unless metricsPublic) /metrics. Empty disables the check entirely, keeping
@@ -121,6 +157,14 @@ func WithMetricsPublic(public bool) Option {
 	return func(s *Server) { s.metricsPublic = public }
 }
 
+// WithAllowMetadata removes the built-in cloud-metadata / link-local connect
+// guard (default-on). It opts back into the pre-guard behaviour for deployments
+// that legitimately probe a link-local address. The operator Policy (--deny) is
+// independent and still applies and wins.
+func WithAllowMetadata(allow bool) Option {
+	return func(s *Server) { s.allowMetadata = allow }
+}
+
 // New builds an agent Server. An empty nodeName is resolved via NodeName; a nil
 // policy means allow-all.
 func New(nodeName string, policy *Policy, opts ...Option) *Server {
@@ -133,6 +177,11 @@ func New(nodeName string, policy *Policy, opts ...Option) *Server {
 	s := &Server{nodeName: nodeName, policy: policy, resolver: net.DefaultResolver}
 	for _, o := range opts {
 		o(s)
+	}
+	// Install the default-on metadata guard unless the operator opted out. Built
+	// after options so WithAllowMetadata can suppress it.
+	if !s.allowMetadata {
+		s.guard = probe.NewDenyGuard(metadataNets())
 	}
 	return s
 }
@@ -225,6 +274,20 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Defence-in-depth rate limit on direct /check calls. Gate after validation
+	// (so a valid host:port keys the bucket) but before any DNS/dial work, so a
+	// throttled request is cheap. A nil limiter always allows (unlimited).
+	if retry, ok := s.allow(host, port); !ok {
+		s.metrics.throttled.Add(1)
+		ra := ratelimit.RetryAfterSeconds(retry)
+		w.Header().Set("Retry-After", ra)
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error":       "rate limit exceeded",
+			"retry_after": ra,
+		})
+		return
+	}
+
 	// Bound the policy DNS resolution by the same capped timeout the probe uses.
 	// resolveTarget's LookupIPAddr runs before the probe and would otherwise sit
 	// on the bare request context (no deadline), letting a hostile or blackholed
@@ -251,7 +314,17 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	// so the policy resolution and the probe share a single timeout budget —
 	// context.WithDeadline keeps the earlier resolveCtx deadline, making timeout
 	// the real end-to-end cap instead of being spent once per step.
-	res := probe.Run(resolveCtx, host, dialHosts, port, proto, timeout, dns)
+	res := probe.Run(resolveCtx, host, dialHosts, port, proto, timeout, dns, s.guard)
+
+	// A connect-guard refusal (cloud metadata / link-local) surfaces as res.Denied.
+	// Route it to the exact same denial path as a resolveTarget policy deny —
+	// increment the denied metric and return the same 403 shape — so metadata and
+	// policy denials are indistinguishable to clients.
+	if res.Denied {
+		s.metrics.denied.Add(1)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "target denied by policy"})
+		return
+	}
 	if res.TCP != nil && res.TCP.OK {
 		s.metrics.ok.Add(1)
 	} else {
@@ -319,6 +392,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "portreach_checks_total{result=\"fail\"} %d\n", s.metrics.fail.Load())
 	fmt.Fprintf(&b, "portreach_checks_total{result=\"denied\"} %d\n", s.metrics.denied.Load())
 	fmt.Fprintf(&b, "portreach_checks_total{result=\"bad_request\"} %d\n", s.metrics.badReq.Load())
+	fmt.Fprintf(&b, "portreach_checks_total{result=\"throttled\"} %d\n", s.metrics.throttled.Load())
 	_, _ = io.WriteString(w, b.String())
 }
 

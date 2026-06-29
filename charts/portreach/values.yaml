@@ -49,6 +49,38 @@ ui:
     dnsName: ""
     mode: relative
 
+  # Optional API rate limiter (off by default = unlimited, today's behaviour).
+  # Gates /api/* per identity (authenticated user, else proxy-aware client IP),
+  # per target (host:port), and a process-global bucket; over limit → 429 +
+  # Retry-After. Each scope is off unless its rate is > 0 (burst must then be
+  # >= 1). Behind an Ingress, set trustedProxies so per-IP keying is correct;
+  # for per-user keying enable auth. maxAgentsPerCheck/maxConcurrentFanout bound
+  # the per-check fan-out independently of the limiter (see below).
+  rateLimit:
+    enabled: false
+    user:
+      rate: 0
+      burst: 0
+    target:
+      rate: 0
+      burst: 0
+    global:
+      rate: 0
+      burst: 0
+    # 0 = unlimited: query every node (today's "from every node" promise). A
+    # positive cap bounds agents queried per check (deterministic by address,
+    # dropped agents reported). maxConcurrentFanout: 0 = unlimited goroutine-
+    # per-agent; > 0 bounds concurrency through a worker pool.
+    maxAgentsPerCheck: 0
+    maxConcurrentFanout: 0
+
+  # CIDRs/IPs of trusted proxies (Ingress/CNI egress). A forwarded client-IP
+  # header is honoured for rate-limit keying only when RemoteAddr is one of
+  # these; otherwise RemoteAddr is used. forwardedHeader overrides the header
+  # (empty = X-Forwarded-For).
+  trustedProxies: []
+  forwardedHeader: ""
+
   service:
     enabled: true
     type: ClusterIP
@@ -188,6 +220,25 @@ agent:
   targetPolicy:
     allow: ""
     deny: ""
+    # Default-on connect guard refusing the whole IPv4 link-local range
+    # (169.254.0.0/16 — covers AWS/GCP/Azure IMDS 169.254.169.254, ECS task
+    # metadata 169.254.170.2, etc.) plus IPv6 fd00:ec2::254. Set true to opt
+    # back in to probing link-local targets (renders --allow-metadata). The
+    # operator deny list above is independent and always wins.
+    allowMetadata: false
+
+  # Optional /check rate limiter (off by default = unlimited). Defence-in-depth
+  # for direct calls to an agent (reachable on the node under hostNetwork); the
+  # UI fan-out already gates at the API. The agent carries no per-user identity,
+  # so only the per-target (host:port) and process-global scopes apply.
+  rateLimit:
+    enabled: false
+    target:
+      rate: 0
+      burst: 0
+    global:
+      rate: 0
+      burst: 0
 
   # Shared bearer token (Boundary B). When set, the agent requires
   # `Authorization: Bearer <token>` on /check (and /metrics, unless metricsPublic)

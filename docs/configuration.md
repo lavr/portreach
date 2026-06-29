@@ -24,6 +24,12 @@ The probe server. Run one per point you want to check from.
 | `--deny` | *(empty)* | comma-separated deny CIDR list (takes precedence over allow) |
 | `--auth-token` | *(empty)* | shared bearer token required on `/check` and `/metrics`; empty = open |
 | `--metrics-public` | `false` | leave `/metrics` open even when a token is set (`/check` stays gated) |
+| `--allow-metadata` | `false` | remove the built-in cloud-metadata/link-local connect guard (`169.254.0.0/16` + `fd00:ec2::254`); operator `--deny` still applies |
+| `--rate-limit` | `false` | enable the optional `/check` rate limiter (defence in depth for direct calls); off = unlimited |
+| `--rate-target-rate` | `0` | per-target (`host:port`) tokens/sec; `0` disables this scope |
+| `--rate-target-burst` | `0` | per-target bucket capacity |
+| `--rate-global-rate` | `0` | process-wide tokens/sec; `0` disables |
+| `--rate-global-burst` | `0` | process-wide bucket capacity |
 
 Environment:
 
@@ -32,14 +38,20 @@ Environment:
 | `NODE_NAME` | point name reported in `/check` responses; falls back to the OS hostname |
 | `PORTREACH_AGENT_TOKEN` | default for `--auth-token` |
 | `PORTREACH_AGENT_METRICS_PUBLIC` | default for `--metrics-public` |
+| `PORTREACH_AGENT_ALLOW_METADATA` | default for `--allow-metadata` |
+| `PORTREACH_RATE_LIMIT` | default for `--rate-limit` |
+| `PORTREACH_RATE_TARGET_RATE` / `PORTREACH_RATE_TARGET_BURST` | defaults for the per-target scope |
+| `PORTREACH_RATE_GLOBAL_RATE` / `PORTREACH_RATE_GLOBAL_BURST` | defaults for the global scope |
 
 Endpoints:
 
 - `GET /check?host=&port=&proto=tcp&timeout=5s` → JSON probe result with a
   `node` field. Returns `200` even when `tcp.ok` is `false` (the probe ran),
-  `400` on bad input, `403` when the target is denied by policy.
+  `400` on bad input, `403` when the target is denied by policy, and `429` +
+  `Retry-After` when the optional rate limiter throttles the request (see the
+  rate limiter section).
 - `GET /healthz` → `{"status":"ok","node":"..."}`.
-- `GET /metrics` → Prometheus text: `portreach_checks_total{result="ok|fail|denied|bad_request"}`.
+- `GET /metrics` → Prometheus text: `portreach_checks_total{result="ok|fail|denied|bad_request|throttled"}`.
 
 `proto` is `tcp` only for now; `timeout` is a Go duration (default `5s`, capped
 at `30s` — larger values are silently clamped; non-positive values fall back to
@@ -66,6 +78,58 @@ portreach agent --allow 10.0.0.0/8 --deny 169.254.169.254/32
 - In policy mode the DNS report contains only the vetted resolved IPs (the exact
   addresses dialed); `cname` is not reported, since capturing it would require a
   second lookup that could disagree with the vetted set.
+
+### Cloud-metadata default-deny (connect-time guard)
+
+Independently of `--allow`/`--deny`, the agent installs a **default-on**
+connect-time guard that refuses connections to the link-local range — the cloud
+instance-metadata services (IMDS) live there and would otherwise hand an SSRF a
+path to instance credentials:
+
+- IPv4 **`169.254.0.0/16`** — deliberately the whole link-local `/16`, not just
+  the single metadata IP. It covers AWS/GCP/Azure IMDS `169.254.169.254`, ECS
+  task metadata `169.254.170.2`, and any other link-local target.
+- IPv6 **`fd00:ec2::254`** (the AWS IMDS IPv6 address).
+
+This is enforced at **connect time** (`net.Dialer.Control`), so it sees the real
+IP the dialer is about to connect to — defeating DNS rebinding — **without**
+changing the dial/report path of normal targets: a plain hostname still dials,
+reports its `cname`, and surfaces DNS errors exactly as before. It does **not**
+pre-resolve.
+
+Semantics for the open (no-`--allow`/`--deny`) path, where the agent dials a
+single hostname and lets the Go resolver pick the address:
+
+- A name resolving **only** to a denied IP → the request is **denied** (the same
+  `denied` response shape and metric as a policy deny; see below). No connection
+  is established.
+- A name with a **mix** of allowed and denied IPs may still return a normal `OK`
+  result — the guard guarantees the denied IP is **never connected to**, but if an
+  allowed sibling connects first the denied address is simply never attempted (so
+  it is not reported as denied). The hard, guaranteed property is *"a denied IP is
+  never connected to"*, not *"any RRset containing a denied IP is reported denied"*.
+
+Override and precedence:
+
+- `--allow-metadata` (env `PORTREACH_AGENT_ALLOW_METADATA`, chart
+  `agent.targetPolicy.allowMetadata: true`) removes **only** this built-in guard.
+- An operator `--deny` (and the resolve-time `Policy`) is **independent and always
+  wins** — opting out of the built-in guard never overrides an explicit deny, so
+  you can re-enable a specific link-local address while still denying others.
+
+A metadata denial is reported **identically to a policy deny**: the `/check`
+response is the denial shape (HTTP `403` at the agent, surfaced in the UI row),
+and `portreach_checks_total{result="denied"}` is incremented — clients cannot
+tell a metadata deny from a CIDR-policy deny.
+
+### Rate limiter (optional, defence in depth)
+
+The agent has an **optional** `/check` rate limiter for deployments where agents
+may be reached directly (the UI also has its own — see below). It is **off by
+default** (`--rate-limit` unset = unlimited, backward compatible). When enabled,
+configure the per-target and/or process-wide (global) token buckets via the
+`--rate-*` flags above; see [the UI rate limiter](#rate-limiter-abuse-controls)
+for how reservation/`429`/`Retry-After` work — the agent shares the same core.
 
 ### Agent token (Boundary B — the primary isolation boundary)
 
@@ -105,7 +169,11 @@ readiness probes keep working.
 ## `portreach ui`
 
 The aggregator and web form. Discovers agents, fans out one target check to all
-of them, and renders a per-point table.
+of them, and renders a per-point table. By default the check reaches every
+discovered agent; `--max-agents-per-check` optionally bounds the blast radius,
+and the `/api/check` response then carries explicit `discovered` / `queried` /
+`dropped` counts (with `summary.total` = queried) so partial coverage is never
+silent.
 
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
@@ -115,6 +183,17 @@ of them, and renders a per-point table.
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | agent port for DNS-discovered and port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
 | `--agent-token` | `PORTREACH_AGENT_TOKEN` | | shared bearer token sent to agents on `/check`; empty = none ([Boundary B](#agent-token-boundary-b--the-primary-isolation-boundary)) |
+| `--max-agents-per-check` | `PORTREACH_MAX_AGENTS_PER_CHECK` | `0` | cap how many discovered agents one check queries; `0` = unlimited (every node). Over the cap, agents are selected deterministically by address and the rest are reported as `dropped` |
+| `--max-concurrent-fanout` | `PORTREACH_MAX_CONCURRENT_FANOUT` | `0` | bound concurrent per-check agent requests; `0` = unlimited (a goroutine per agent) |
+| `--rate-limit` | `PORTREACH_RATE_LIMIT` | `false` | enable the API rate limiter; off = unlimited ([details](#rate-limiter-abuse-controls)) |
+| `--rate-user-rate` | `PORTREACH_RATE_USER_RATE` | `0` | per-identity (user/IP) tokens/sec; `0` disables this scope |
+| `--rate-user-burst` | `PORTREACH_RATE_USER_BURST` | `0` | per-identity bucket capacity |
+| `--rate-target-rate` | `PORTREACH_RATE_TARGET_RATE` | `0` | per-target (`host:port`) tokens/sec; `0` disables |
+| `--rate-target-burst` | `PORTREACH_RATE_TARGET_BURST` | `0` | per-target bucket capacity |
+| `--rate-global-rate` | `PORTREACH_RATE_GLOBAL_RATE` | `0` | process-wide tokens/sec; `0` disables |
+| `--rate-global-burst` | `PORTREACH_RATE_GLOBAL_BURST` | `0` | process-wide bucket capacity |
+| `--trusted-proxies` | `PORTREACH_TRUSTED_PROXIES` | | CSV of proxy CIDRs/IPs whose forwarded header is trusted for client-IP keying ([details](#trusted-proxies--client-ip-keying)) |
+| `--forwarded-header` | `PORTREACH_FORWARDED_HEADER` | `X-Forwarded-For` | forwarded client-IP header, trusted only from `--trusted-proxies` |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | path to the SSO auth config YAML; empty = auth disabled |
 | `--ui-title` | `PORTREACH_UI_TITLE` | localized heading | HTML page heading; explicitly empty suppresses `<h1>` |
 | `--ui-description` | `PORTREACH_UI_DESCRIPTION` | | trusted HTML block under the heading |
@@ -140,7 +219,10 @@ Endpoints:
 
 - `GET /` → HTML form; submitting it re-renders the page with the result table.
 - `GET /api/check?host=&port=&proto=&timeout=` → aggregated JSON
-  (`{target, agents:[...], summary:{ok,total}}`).
+  (`{target, agents:[...], discovered, queried, dropped, summary:{ok,total}}`).
+  `discovered`/`queried`/`dropped` make partial coverage explicit when
+  `--max-agents-per-check` caps the fan-out; `summary.total` equals `queried`.
+  Over the rate limit the endpoint returns `429` + `Retry-After` instead.
 - `GET /healthz` → `{"status":"ok"}`.
 
 A single slow or unreachable agent does not fail the whole request: its row
@@ -148,6 +230,65 @@ carries an `error` and the rest still report. The per-check budget is bounded by
 `--timeout`. The `timeout` query param is clamped to stay safely under the
 budget (roughly `--timeout − 1s`) so each agent reports its own per-node timeout
 result instead of a generic UI transport error.
+
+### Rate limiter (abuse controls)
+
+With hundreds of users (and turnover) the UI can be turned into an internal
+port-scanner or a DoS amplifier. The **optional** rate limiter caps how fast
+checks can be triggered. It is **off by default** (`--rate-limit` unset =
+unlimited, fully backward compatible) and applies to **both** `/api/check` and
+the `/` form submission.
+
+Three independent token-bucket scopes, each enabled only when its `rate`/`burst`
+is positive (a scope with `rate=0` is disabled):
+
+- **per-user** (`--rate-user-rate` / `--rate-user-burst`) — keyed by the
+  authenticated identity, or the proxy-aware client IP when auth is off (see
+  [trusted proxies](#trusted-proxies--client-ip-keying)).
+- **per-target** (`--rate-target-rate` / `--rate-target-burst`) — keyed by the
+  requested `host:port`, so one hammered destination cannot be amplified across
+  users.
+- **global** (`--rate-global-rate` / `--rate-global-burst`) — a process-wide cap.
+
+How a request is admitted (reservation-based, so a denied request burns no
+unrelated tokens):
+
+- A request takes a reservation from **every** applicable scope at once. If any
+  scope cannot admit it immediately, **all** reservations are cancelled and the
+  request is rejected — the other buckets are left untouched.
+- A rejection returns **`429 Too Many Requests`** with a **`Retry-After`** header
+  derived from the binding reservation's delay (`/api/check` returns JSON; the `/`
+  form re-renders with a localized throttle message and the same header).
+- Validation is enabled-gated: the default-off config is valid (no-op); a
+  half-configured limiter (e.g. `burst 0`, negative rate, or a requested count
+  larger than the burst) is rejected at startup (exit code 2). An impossible
+  reservation degrades to an immediate reject with a **capped** `Retry-After` —
+  never a hang.
+- Each throttle emits a structured `throttle` audit event (user/IP, target,
+  reason) into the same JSON log pipeline as `check` events.
+- Idle buckets are evicted to bound memory.
+
+> Per-IP keying is only meaningful with **auth off and correct trusted-proxy
+> config** (otherwise every request behind an Ingress shares the proxy's IP).
+> For real per-user limits, enable auth so the limiter keys on the authenticated
+> identity.
+
+### Trusted proxies / client-IP keying
+
+When auth is off, the rate limiter keys on the **client IP**. Behind an Ingress
+or reverse proxy, `RemoteAddr` is the proxy and a raw `X-Forwarded-For` header is
+**spoofable** by clients. The forwarded header is therefore trusted **only when
+`RemoteAddr` is one of `--trusted-proxies`**:
+
+- `--trusted-proxies` (env `PORTREACH_TRUSTED_PROXIES`) — CSV of CIDRs/IPs of your
+  Ingress/CNI egress. Only when the direct peer matches one of these is the
+  forwarded header believed; otherwise the limiter uses `RemoteAddr`.
+- `--forwarded-header` (env `PORTREACH_FORWARDED_HEADER`, default
+  `X-Forwarded-For`) — which header to read the client IP from.
+
+If portreach is exposed **directly** (no proxy), leave `--trusted-proxies` empty
+so `RemoteAddr` is always used. Set it to your proxy ranges **before** relying on
+per-IP limits, or prefer enabling auth for per-user keys.
 
 ## Discovery examples
 

@@ -41,19 +41,75 @@ type agentCheckResponse struct {
 	probe.Result
 }
 
+// FanoutConfig bounds the per-check fan-out. Both fields default to 0 =
+// unlimited, preserving the "from every node" promise; set either one to bound
+// the blast radius (MaxAgentsPerCheck) or the concurrency (MaxConcurrentFanout)
+// of a single check.
+type FanoutConfig struct {
+	// MaxAgentsPerCheck caps how many discovered agents a single check queries.
+	// 0 = unlimited (query every discovered agent — today's behaviour). When the
+	// cap is exceeded, agents are selected deterministically (sorted by Addr) and
+	// the rest are reported as dropped, never silently truncated.
+	MaxAgentsPerCheck int
+	// MaxConcurrentFanout bounds how many agents are queried concurrently.
+	// 0 = unlimited (a goroutine per agent — today's behaviour); >0 runs a bounded
+	// worker pool of that size. A zero-size pool would hang, so it is never spawned.
+	MaxConcurrentFanout int
+}
+
+// Validate rejects negative caps; both fields are otherwise valid (0 = unlimited).
+func (c FanoutConfig) Validate() error {
+	if c.MaxAgentsPerCheck < 0 {
+		return fmt.Errorf("maxAgentsPerCheck must be >= 0, got %d", c.MaxAgentsPerCheck)
+	}
+	if c.MaxConcurrentFanout < 0 {
+		return fmt.Errorf("maxConcurrentFanout must be >= 0, got %d", c.MaxConcurrentFanout)
+	}
+	return nil
+}
+
+// selectAgents applies the optional MaxAgentsPerCheck cap, returning the agents
+// to query and the number dropped. With max <= 0 (unlimited) or fewer agents than
+// the cap, every agent is queried and nothing is dropped. When the cap is hit,
+// agents are sorted by Addr first so the selected subset is deterministic and
+// reproducible — Addr is the only stable key known before a request (Node only
+// appears in an agent's response). The input slice is never mutated.
+func selectAgents(agents []discovery.Agent, max int) (selected []discovery.Agent, dropped int) {
+	if max <= 0 || len(agents) <= max {
+		return agents, 0
+	}
+	sorted := append([]discovery.Agent(nil), agents...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Addr < sorted[j].Addr })
+	return sorted[:max], len(agents) - max
+}
+
 // CheckAll queries every agent's /check endpoint in parallel for the target and
 // returns one AgentResult per agent. A failing agent yields a result with Error
 // set rather than aborting the whole fan-out. Results are ordered by agent addr
 // for stable output. The caller's ctx bounds the overall fan-out; client should
 // carry a per-request timeout. token, when non-empty, is sent as the agent
 // bearer token on every /check call; empty means no header (backward compatible).
-func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent, target Target, token string) []AgentResult {
+// maxConcurrent bounds the worker pool: 0 (or >= len(agents)) means a goroutine
+// per agent (today's behaviour); a positive value runs that many concurrently.
+func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent, target Target, token string, maxConcurrent int) []AgentResult {
 	results := make([]AgentResult, len(agents))
+	// A nil semaphore means unlimited concurrency; a positive cap caps in-flight
+	// probes. We never build a zero-capacity channel (it would deadlock).
+	var sem chan struct{}
+	if maxConcurrent > 0 && maxConcurrent < len(agents) {
+		sem = make(chan struct{}, maxConcurrent)
+	}
 	var wg sync.WaitGroup
 	for i, a := range agents {
 		wg.Add(1)
+		if sem != nil {
+			sem <- struct{}{} // block until a worker slot frees
+		}
 		go func(i int, a discovery.Agent) {
 			defer wg.Done()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
 			results[i] = checkOne(ctx, client, a, target, token)
 		}(i, a)
 	}
@@ -128,11 +184,17 @@ type Summary struct {
 	Total int `json:"total"`
 }
 
-// Response is the aggregated /api/check payload.
+// Response is the aggregated /api/check payload. Discovered/Queried/Dropped make
+// partial results unambiguous when a MaxAgentsPerCheck cap is in effect: with no
+// cap they are equal (Discovered == Queried, Dropped == 0) and Summary.Total
+// equals the number of agents queried.
 type Response struct {
-	Target  Target        `json:"target"`
-	Agents  []AgentResult `json:"agents"`
-	Summary Summary       `json:"summary"`
+	Target     Target        `json:"target"`
+	Agents     []AgentResult `json:"agents"`
+	Summary    Summary       `json:"summary"`
+	Discovered int           `json:"discovered"`
+	Queried    int           `json:"queried"`
+	Dropped    int           `json:"dropped"`
 }
 
 // Summarize tallies the OK/total counts for a set of agent results.

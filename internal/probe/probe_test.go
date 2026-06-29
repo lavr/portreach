@@ -2,12 +2,154 @@ package probe
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// countingListener listens on network/addr and counts accepted connections, so a
+// test can prove the connect guard refused a denied address before any TCP
+// connection was established (zero accepts). It skips the test when the address
+// cannot be bound (e.g. IPv6 loopback unavailable in CI).
+type countingListener struct {
+	ln       net.Listener
+	accepted atomic.Int64
+}
+
+func newCountingListener(t *testing.T, network, addr string) *countingListener {
+	t.Helper()
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		t.Skipf("listen %s %s: %v", network, addr, err)
+	}
+	cl := &countingListener{ln: ln}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			cl.accepted.Add(1)
+			_ = c.Close()
+		}
+	}()
+	return cl
+}
+
+func mustCIDR(t *testing.T, cidr string) *net.IPNet {
+	t.Helper()
+	_, n, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatalf("ParseCIDR(%q): %v", cidr, err)
+	}
+	return n
+}
+
+// TestRunGuardDeniesOnlyAddress proves a name resolving only to a denied IP
+// yields Result.Denied=true and never establishes a connection: the guard's
+// Control refuses 127.0.0.1 at connect time, so the live listener accepts zero.
+func TestRunGuardDeniesOnlyAddress(t *testing.T) {
+	cl := newCountingListener(t, "tcp", "127.0.0.1:0")
+	defer cl.ln.Close() //nolint:errcheck // best-effort close
+	port := cl.ln.Addr().(*net.TCPAddr).Port
+
+	guard := NewDenyGuard([]*net.IPNet{mustCIDR(t, "127.0.0.0/8")})
+	res := Run(context.Background(), "metadata.test", []string{"127.0.0.1"}, port, "tcp", 2*time.Second, nil, guard)
+
+	if !res.Denied {
+		t.Fatalf("expected Result.Denied for a denied-only target, got %+v", res)
+	}
+	if res.DeniedReason != DenyReason {
+		t.Errorf("DeniedReason = %q, want %q", res.DeniedReason, DenyReason)
+	}
+	if res.TCP != nil && res.TCP.OK {
+		t.Errorf("expected no TCP connection to a denied address, got %+v", res.TCP)
+	}
+	if n := cl.accepted.Load(); n != 0 {
+		t.Errorf("listener accepted %d connections, want 0 (guard must refuse before connect)", n)
+	}
+}
+
+// TestRunGuardMixedAllowedSiblingConnects covers the narrowed mixed-RRset
+// semantics: a denied address (::1, guarded) alongside an allowed sibling
+// (127.0.0.1) must never be connected to, yet the probe still returns OK via the
+// allowed sibling and is NOT reported as denied. The denied listener records zero
+// accepts; the result stays a normal OK.
+func TestRunGuardMixedAllowedSiblingConnects(t *testing.T) {
+	allowed := newCountingListener(t, "tcp", "127.0.0.1:0")
+	defer allowed.ln.Close() //nolint:errcheck // best-effort close
+	port := allowed.ln.Addr().(*net.TCPAddr).Port
+
+	// Bind the denied ::1 listener on the *same* port as the allowed sibling, so a
+	// guard regression that let ::1 through would actually connect and bump the
+	// accept count. Without this the denied address has no listener at the dialed
+	// port and the zero-accept assertion would pass even with the guard removed —
+	// proving the topology, not the guard. 127.0.0.1 and ::1 are distinct addresses,
+	// so both can bind the same port number.
+	denied := newCountingListener(t, "tcp6", "[::1]:"+strconv.Itoa(port))
+	defer denied.ln.Close() //nolint:errcheck // best-effort close
+
+	guard := NewDenyGuard([]*net.IPNet{mustCIDR(t, "::1/128")})
+	res := Run(context.Background(), "mixed.test", []string{"::1", "127.0.0.1"}, port, "tcp", 2*time.Second, nil, guard)
+
+	if res.Denied {
+		t.Errorf("mixed RRset with a connecting allowed sibling must not be Denied, got %+v", res)
+	}
+	if res.TCP == nil || !res.TCP.OK {
+		t.Fatalf("expected the allowed sibling to connect, got %+v", res.TCP)
+	}
+	if n := denied.accepted.Load(); n != 0 {
+		t.Errorf("denied (::1) listener accepted %d connections, want 0 (never connect to a denied IP)", n)
+	}
+}
+
+// TestRunNoGuardUnchanged proves a nil guard leaves the dial/report path exactly
+// as before: an open port connects and the result carries no denial.
+func TestRunNoGuardUnchanged(t *testing.T) {
+	ln, port := listenLocal(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, port, "tcp", 2*time.Second, nil, nil)
+	if res.Denied || res.DeniedReason != "" {
+		t.Errorf("nil guard must never set Denied, got %+v", res)
+	}
+	if res.TCP == nil || !res.TCP.OK {
+		t.Errorf("expected a normal OK result with no guard, got %+v", res.TCP)
+	}
+}
+
+// TestResultJSONNoNewKeysWhenNotDenied is the wire-compat guard (#5): a normal,
+// non-denied Result must serialize without the new denied/denied_reason keys, so
+// existing clients see a byte-identical response shape.
+func TestResultJSONNoNewKeysWhenNotDenied(t *testing.T) {
+	res := Result{
+		Host:  "example.test",
+		Port:  443,
+		Proto: "tcp",
+		TCP:   &DialResult{OK: true, MS: 1.2},
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(b)
+	if strings.Contains(got, "denied") {
+		t.Errorf("normal response must not contain a denied key, got %s", got)
+	}
+
+	// And a denied Result DOES carry both keys.
+	db, err := json.Marshal(Result{Host: "h", Port: 80, Proto: "tcp", Denied: true, DeniedReason: DenyReason})
+	if err != nil {
+		t.Fatalf("marshal denied: %v", err)
+	}
+	if !strings.Contains(string(db), `"denied":true`) || !strings.Contains(string(db), `"denied_reason"`) {
+		t.Errorf("denied response must carry both keys, got %s", db)
+	}
+}
 
 // listenLocal opens a TCP listener on 127.0.0.1 and returns it with its port.
 func listenLocal(t *testing.T) (net.Listener, int) {
@@ -24,7 +166,7 @@ func TestRunOpenPort(t *testing.T) {
 	ln, port := listenLocal(t)
 	defer ln.Close() //nolint:errcheck // best-effort close
 
-	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, port, "tcp", 2*time.Second, nil)
+	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, port, "tcp", 2*time.Second, nil, nil)
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
 	}
@@ -44,7 +186,7 @@ func TestRunClosedPort(t *testing.T) {
 	ln, port := listenLocal(t)
 	_ = ln.Close()
 
-	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, port, "tcp", 2*time.Second, nil)
+	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, port, "tcp", 2*time.Second, nil, nil)
 	if res.TCP == nil {
 		t.Fatalf("expected TCP result")
 	}
@@ -60,7 +202,7 @@ func TestRunResolveLocalhost(t *testing.T) {
 	ln, port := listenLocal(t)
 	defer ln.Close() //nolint:errcheck // best-effort close
 
-	res := Run(context.Background(), "localhost", []string{"localhost"}, port, "tcp", 2*time.Second, nil)
+	res := Run(context.Background(), "localhost", []string{"localhost"}, port, "tcp", 2*time.Second, nil, nil)
 	if res.DNS == nil {
 		t.Fatalf("expected DNS result")
 	}
@@ -73,7 +215,7 @@ func TestRunResolveLocalhost(t *testing.T) {
 }
 
 func TestRunUnknownHost(t *testing.T) {
-	res := Run(context.Background(), "nonexistent.invalid.example.", []string{"nonexistent.invalid.example."}, 80, "tcp", 2*time.Second, nil)
+	res := Run(context.Background(), "nonexistent.invalid.example.", []string{"nonexistent.invalid.example."}, 80, "tcp", 2*time.Second, nil, nil)
 	if res.DNS == nil {
 		t.Fatalf("expected DNS result")
 	}
@@ -87,7 +229,7 @@ func TestRunUnknownHost(t *testing.T) {
 
 func TestRunInvalidPort(t *testing.T) {
 	for _, p := range []int{0, -1, 70000} {
-		res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, p, "tcp", time.Second, nil)
+		res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, p, "tcp", time.Second, nil, nil)
 		if res.Error == "" {
 			t.Errorf("port %d: expected validation error", p)
 		}
@@ -98,7 +240,7 @@ func TestRunInvalidPort(t *testing.T) {
 }
 
 func TestRunInvalidProto(t *testing.T) {
-	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, 80, "udp", time.Second, nil)
+	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, 80, "udp", time.Second, nil, nil)
 	if res.Error == "" {
 		t.Fatalf("expected error for unsupported proto")
 	}
@@ -114,7 +256,7 @@ func TestRunTimeout(t *testing.T) {
 	// timing out (transparent proxies/VPNs can accept such connections).
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	res := Run(ctx, "192.0.2.1", []string{"192.0.2.1"}, 9, "tcp", time.Second, nil)
+	res := Run(ctx, "192.0.2.1", []string{"192.0.2.1"}, 9, "tcp", time.Second, nil, nil)
 	if res.TCP == nil {
 		t.Fatalf("expected TCP result")
 	}
@@ -145,7 +287,7 @@ func TestRunFallbackToSecondAddress(t *testing.T) {
 	ln, port := listenLocal(t)
 	defer ln.Close() //nolint:errcheck // best-effort close
 
-	res := Run(context.Background(), "example.test", []string{"127.0.0.2", "127.0.0.1"}, port, "tcp", 2*time.Second, nil)
+	res := Run(context.Background(), "example.test", []string{"127.0.0.2", "127.0.0.1"}, port, "tcp", 2*time.Second, nil, nil)
 	if res.TCP == nil || !res.TCP.OK {
 		t.Fatalf("expected the reachable sibling to connect, got %+v", res.TCP)
 	}
@@ -167,7 +309,7 @@ func TestRunBlackholeFirstAddressDoesNotStallSecond(t *testing.T) {
 	defer ln.Close() //nolint:errcheck // best-effort close
 
 	start := time.Now()
-	res := Run(context.Background(), "example.test", []string{"127.0.0.2", "127.0.0.1"}, port, "tcp", 5*time.Second, nil)
+	res := Run(context.Background(), "example.test", []string{"127.0.0.2", "127.0.0.1"}, port, "tcp", 5*time.Second, nil, nil)
 	if res.TCP == nil || !res.TCP.OK {
 		t.Fatalf("expected the loopback sibling to connect despite the unreachable first address, got %+v", res.TCP)
 	}
@@ -204,7 +346,7 @@ func TestRunManyAddressesBoundedPool(t *testing.T) {
 	}
 
 	start := time.Now()
-	res := Run(context.Background(), "example.test", hosts, port, "tcp", 5*time.Second, nil)
+	res := Run(context.Background(), "example.test", hosts, port, "tcp", 5*time.Second, nil, nil)
 	if res.TCP == nil || !res.TCP.OK {
 		t.Fatalf("expected the reachable address to connect, got %+v", res.TCP)
 	}
@@ -234,7 +376,7 @@ func TestRunReachableAddressSortsLastWithinCap(t *testing.T) {
 	hosts = append(hosts, "127.0.0.1") // reachable address sorts last, within the cap
 
 	start := time.Now()
-	res := Run(context.Background(), "example.test", hosts, port, "tcp", 5*time.Second, nil)
+	res := Run(context.Background(), "example.test", hosts, port, "tcp", 5*time.Second, nil, nil)
 	if res.TCP == nil || !res.TCP.OK {
 		t.Fatalf("expected the late reachable address to connect, got %+v", res.TCP)
 	}

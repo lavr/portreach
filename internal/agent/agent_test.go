@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/lavr/portreach/internal/ratelimit"
 )
 
 // fakeResolver returns a fixed answer for any host, letting tests drive the
@@ -489,6 +492,103 @@ func TestAgentNoTokenOpen(t *testing.T) {
 	}
 }
 
+// TestAgentRateLimit verifies the optional /check limiter throttles direct calls
+// over the per-target limit (429 + Retry-After) while a different target keys a
+// separate bucket and the throttle is counted in /metrics. A frozen clock makes
+// it hermetic — no real sleeps, no refill between calls.
+func TestAgentRateLimit(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	fixed := time.Now()
+	lim, err := ratelimit.New(ratelimit.Config{
+		Enabled: true,
+		Target:  ratelimit.Scope{Rate: 1, Burst: 1},
+	}, ratelimit.WithClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatalf("ratelimit.New: %v", err)
+	}
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithLimiter(lim)).Handler())
+	defer srv.Close()
+
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+
+	// First call to this target spends the single burst token → allowed.
+	if resp, body := get(t, srv.URL, check); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first call: status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	// Second call (clock frozen, no refill) → throttled with a Retry-After hint.
+	resp, body := get(t, srv.URL, check)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second call: status = %d, want 429; body=%s", resp.StatusCode, body)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Errorf("429 response missing Retry-After header")
+	}
+	if !strings.Contains(string(body), "rate limit exceeded") {
+		t.Errorf("expected rate-limit message, got %s", body)
+	}
+
+	// A different target keys a different bucket → still allowed (per-target).
+	other := fmt.Sprintf("/check?host=localhost&port=%d", port)
+	if resp, body := get(t, srv.URL, other); resp.StatusCode != http.StatusOK {
+		t.Fatalf("other target: status = %d, want 200 (per-target isolation); body=%s", resp.StatusCode, body)
+	}
+
+	// The throttle is observable in /metrics.
+	_, mbody := get(t, srv.URL, "/metrics")
+	if !strings.Contains(string(mbody), `portreach_checks_total{result="throttled"} 1`) {
+		t.Errorf("expected throttled=1, got %s", mbody)
+	}
+}
+
+// TestAgentGlobalRateLimit verifies the agent's optional global scope throttles
+// across distinct targets: with only a global bucket configured, a second call to
+// a *different* target is still 429 — the process-global cap, not the per-target
+// bucket, is the gate. A frozen clock keeps it hermetic (no refill between calls).
+func TestAgentGlobalRateLimit(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	fixed := time.Now()
+	lim, err := ratelimit.New(ratelimit.Config{
+		Enabled: true,
+		Global:  ratelimit.Scope{Rate: 1, Burst: 1},
+	}, ratelimit.WithClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatalf("ratelimit.New: %v", err)
+	}
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithLimiter(lim)).Handler())
+	defer srv.Close()
+
+	// First call spends the single global token.
+	if resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first call: status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	// A different target is still throttled by the shared global bucket.
+	resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=localhost&port=%d", port))
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second call (other target): status = %d, want 429 (global cap); body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestAgentRateLimitUnsetUnlimited verifies that without a limiter /check stays
+// unlimited (today's behaviour): repeated calls to the same target all pass.
+func TestAgentRateLimitUnsetUnlimited(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := httptest.NewServer(New("testnode", &Policy{}).Handler())
+	defer srv.Close()
+
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+	for i := 0; i < 5; i++ {
+		if resp, body := get(t, srv.URL, check); resp.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: status = %d, want 200 (unlimited); body=%s", i, resp.StatusCode, body)
+		}
+	}
+}
+
 func TestPolicyAllowed(t *testing.T) {
 	p, err := ParsePolicy("10.0.0.0/8", "10.1.0.0/16")
 	if err != nil {
@@ -511,5 +611,108 @@ func TestParsePolicyError(t *testing.T) {
 	}
 	if _, err := ParsePolicy("", "1.2.3.4"); err == nil {
 		t.Error("expected error for invalid deny CIDR (missing mask)")
+	}
+}
+
+// TestCheckMetadataDeniedByDefault verifies the default-on connect guard refuses
+// the whole IPv4 link-local range (not just the single metadata IP): a request to
+// 169.254.169.254 (IMDS) and a second in-range IP (169.254.170.2, ECS) is routed
+// to the same denial path as a policy deny — 403 with the same shape and the
+// denied metric incremented. The guard refuses at connect, so no real outbound
+// connection is made (hermetic).
+func TestCheckMetadataDeniedByDefault(t *testing.T) {
+	for _, ip := range []string{"169.254.169.254", "169.254.170.2"} {
+		srv := newTestServer(t, "", "") // open agent, default metadata guard on
+		// No short timeout: the guard refuses at connect and returns instantly, so a
+		// generous budget keeps the test fast while avoiding a deadline-exhaustion
+		// flake (an already-expired dial context never reaches Control).
+		resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=%s&port=80", ip))
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: status = %d, want 403 (metadata denied); body=%s", ip, resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "denied") {
+			t.Errorf("%s: expected denied message, got %s", ip, body)
+		}
+		_, mbody := get(t, srv.URL, "/metrics")
+		if !strings.Contains(string(mbody), `portreach_checks_total{result="denied"} 1`) {
+			t.Errorf("%s: expected denied=1, got %s", ip, mbody)
+		}
+		srv.Close()
+	}
+}
+
+// TestCheckMetadataDeniedEvenWhenPolicyAllows proves the guard is independent of
+// the operator Policy: a hostname resolving to a metadata IP that the policy
+// explicitly allows (0.0.0.0/0) is still refused at connect and reported denied.
+func TestCheckMetadataDeniedEvenWhenPolicyAllows(t *testing.T) {
+	policy, err := ParsePolicy("0.0.0.0/0", "")
+	if err != nil {
+		t.Fatalf("ParsePolicy: %v", err)
+	}
+	s := New("testnode", policy)
+	s.resolver = fakeResolver{ips: []net.IPAddr{{IP: net.ParseIP("169.254.169.254")}}}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp, body := get(t, srv.URL, "/check?host=imds.test&port=80")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (guard wins over allow-all policy); body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestAllowMetadataRemovesGuard verifies WithAllowMetadata removes only the
+// built-in guard (default on, removed when opted out).
+func TestAllowMetadataRemovesGuard(t *testing.T) {
+	if New("testnode", nil).guard == nil {
+		t.Error("default agent must install the metadata guard")
+	}
+	if New("testnode", nil, WithAllowMetadata(true)).guard != nil {
+		t.Error("WithAllowMetadata(true) must remove the metadata guard")
+	}
+}
+
+// TestOperatorDenyWinsWithAllowMetadata proves an operator --deny still applies
+// and wins even when the built-in metadata guard is opted out: opting out of the
+// guard never overrides an explicit deny.
+func TestOperatorDenyWinsWithAllowMetadata(t *testing.T) {
+	policy, err := ParsePolicy("", "127.0.0.0/8")
+	if err != nil {
+		t.Fatalf("ParsePolicy: %v", err)
+	}
+	srv := httptest.NewServer(New("testnode", policy, WithAllowMetadata(true)).Handler())
+	defer srv.Close()
+
+	resp, body := get(t, srv.URL, "/check?host=127.0.0.1&port=80")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (operator --deny still wins); body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestCheckPlainHostnameUnchangedByGuard is the compat assertion: a normal target
+// (loopback listener) dials and reports exactly as before with the default guard
+// installed — no denial, CNAME/DNS reporting intact.
+func TestCheckPlainHostnameUnchangedByGuard(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := newTestServer(t, "", "") // default metadata guard on
+	defer srv.Close()
+
+	resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=localhost&port=%d&timeout=2s", port))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (normal target unaffected by guard); body=%s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), `"denied"`) {
+		t.Errorf("normal response must not contain a denied key, got %s", body)
+	}
+	var cr checkResp
+	if err := json.Unmarshal(body, &cr); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, body)
+	}
+	if cr.TCP == nil || !cr.TCP.OK {
+		t.Errorf("expected TCP.OK on a reachable target, got %+v", cr.TCP)
+	}
+	if cr.DNS == nil || len(cr.DNS.Resolved) == 0 {
+		t.Errorf("expected DNS reporting intact for a plain hostname, got %+v", cr.DNS)
 	}
 }

@@ -29,3 +29,11 @@ func WithAgentToken(token string) Option {
 		s.agentToken = token
 	}
 }
+
+// WithFanout sets the optional per-check fan-out bounds. The zero value
+// (FanoutConfig{}) keeps the unlimited "from every node" behaviour.
+func WithFanout(c FanoutConfig) Option {
+	return func(s *Server) {
+		s.fanoutCfg = c
+	}
+}

@@ -40,6 +40,9 @@
             "mode": { "type": "string", "enum": ["relative", "fqdn", "bare"] }
           }
         },
+        "rateLimit": { "$ref": "#/definitions/uiRateLimit" },
+        "trustedProxies": { "type": "array", "items": { "type": "string" } },
+        "forwardedHeader": { "type": "string" },
         "service": { "$ref": "#/definitions/service" },
         "ingress": {
           "type": "object",
@@ -173,9 +176,11 @@
           "type": "object",
           "properties": {
             "allow": { "type": "string" },
-            "deny": { "type": "string" }
+            "deny": { "type": "string" },
+            "allowMetadata": { "type": "boolean" }
           }
         },
+        "rateLimit": { "$ref": "#/definitions/rateLimit" },
         "network": {
           "type": "object",
           "properties": {
@@ -296,6 +301,32 @@
           }
         }
       ]
+    },
+    "rateScope": {
+      "type": "object",
+      "properties": {
+        "rate": { "type": "number", "minimum": 0 },
+        "burst": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "target": { "$ref": "#/definitions/rateScope" },
+        "global": { "$ref": "#/definitions/rateScope" }
+      }
+    },
+    "uiRateLimit": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "user": { "$ref": "#/definitions/rateScope" },
+        "target": { "$ref": "#/definitions/rateScope" },
+        "global": { "$ref": "#/definitions/rateScope" },
+        "maxAgentsPerCheck": { "type": "integer", "minimum": 0 },
+        "maxConcurrentFanout": { "type": "integer", "minimum": 0 }
+      }
     },
     "intOrString": {
       "anyOf": [

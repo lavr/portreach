@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
@@ -11,6 +12,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lavr/portreach/internal/discovery"
+	"github.com/lavr/portreach/internal/ratelimit"
+	"github.com/lavr/portreach/internal/ui"
 )
 
 // writeAuthConfig writes contents to a temp file and returns its path.
@@ -37,7 +42,7 @@ const validGitHubConfig = `auth:
 
 func TestBuildUIHandlerNoAuthConfig(t *testing.T) {
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, "", "", &out)
+	h, err := buildUIHandler(nil, time.Second, "", "", nil, ui.FanoutConfig{}, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +60,7 @@ func TestBuildUIHandlerDisabledConfigIsOpen(t *testing.T) {
 	// A config file with no providers is valid and leaves the UI unauthenticated.
 	path := writeAuthConfig(t, "auth:\n  allowedUsers: []\n")
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, "", &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &out)
 	if err != nil {
 		t.Fatalf("disabled config should not error: %v", err)
 	}
@@ -76,13 +81,13 @@ func TestBuildUIHandlerInvalidConfigErrors(t *testing.T) {
       type: github
       clientID: cid
 `)
-	if _, err := buildUIHandler(nil, time.Second, path, "", &bytes.Buffer{}); err == nil {
+	if _, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error for invalid (enabled) auth config")
 	}
 }
 
 func TestBuildUIHandlerMissingConfigFileErrors(t *testing.T) {
-	if _, err := buildUIHandler(nil, time.Second, "/no/such/auth.yaml", "", &bytes.Buffer{}); err == nil {
+	if _, err := buildUIHandler(nil, time.Second, "/no/such/auth.yaml", "", nil, ui.FanoutConfig{}, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error for missing auth config file")
 	}
 }
@@ -90,7 +95,7 @@ func TestBuildUIHandlerMissingConfigFileErrors(t *testing.T) {
 func TestBuildUIHandlerEnabledGatesAndAnnounces(t *testing.T) {
 	path := writeAuthConfig(t, validGitHubConfig)
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, "", &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &out)
 	if err != nil {
 		t.Fatalf("valid config should not error: %v", err)
 	}
@@ -139,7 +144,7 @@ func TestBuildUIHandlerAPIOnlyEnablesBearerGate(t *testing.T) {
 
 	path := writeAuthConfig(t, "auth:\n  api:\n    - id: ci\n      issuer: "+srv.URL+"\n      audience: portreach\n")
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, "", &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &out)
 	if err != nil {
 		t.Fatalf("bearer-only config should build: %v", err)
 	}
@@ -219,6 +224,99 @@ func TestBrandingFlagEnvResolutionAndExpansion(t *testing.T) {
 		t.Fatal("nil optional expansion should stay nil")
 	}
 }
+
+// TestRunUIInvalidRateConfigExits2 covers the limiter wiring: --rate-limit with
+// no scope (and an invalid trusted-proxy) fails Validate, so runUI exits 2.
+func TestRunUIInvalidRateConfigExits2(t *testing.T) {
+	// Enabled but no scope configured → Validate rejects.
+	assertExit(t, []string{"ui", "--agents=a:1", "--rate-limit"}, 2)
+	// Enabled, valid scope, but a bogus trusted-proxy CIDR → Validate rejects.
+	assertExit(t, []string{"ui", "--agents=a:1", "--rate-limit", "--rate-user-rate=1", "--rate-user-burst=1", "--trusted-proxies=not-a-cidr"}, 2)
+}
+
+// TestBuildUIHandlerWithLimiterThrottles proves a limiter passed through
+// buildUIHandler actually gates /api/check: the second same-client request 429s.
+func TestBuildUIHandlerWithLimiterThrottles(t *testing.T) {
+	lim, err := ratelimit.New(ratelimit.Config{
+		Enabled: true,
+		User:    ratelimit.Scope{Rate: 1, Burst: 1},
+	})
+	if err != nil {
+		t.Fatalf("ratelimit.New: %v", err)
+	}
+	h, err := buildUIHandler(staticDisc{}, time.Second, "", "", lim, ui.FanoutConfig{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("buildUIHandler: %v", err)
+	}
+
+	do := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/api/check?host=example&port=80", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := do(); code != http.StatusOK {
+		t.Fatalf("first = %d, want 200", code)
+	}
+	if code := do(); code != http.StatusTooManyRequests {
+		t.Fatalf("second = %d, want 429", code)
+	}
+}
+
+func TestSplitList(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"  ", nil},
+		{"10.0.0.1", []string{"10.0.0.1"}},
+		{"10.0.0.0/8, 192.168.0.0/16", []string{"10.0.0.0/8", "192.168.0.0/16"}},
+		{"a,,b, ,c", []string{"a", "b", "c"}},
+	}
+	for _, c := range cases {
+		got := splitList(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("splitList(%q) = %v, want %v", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("splitList(%q)[%d] = %q, want %q", c.in, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+func TestEnvFloat(t *testing.T) {
+	const name = "PORTREACH_TEST_FLOAT"
+	cases := []struct {
+		val  string // "" means unset
+		set  bool
+		def  float64
+		want float64
+	}{
+		{val: "2.5", set: true, def: 0, want: 2.5},
+		{val: "garbage", set: true, def: 1.5, want: 1.5}, // unparseable → default
+		{set: false, def: 3.0, want: 3.0},                // unset → default
+	}
+	for _, c := range cases {
+		if c.set {
+			t.Setenv(name, c.val)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+		if got := envFloat(name, c.def); got != c.want {
+			t.Errorf("envFloat(set=%v val=%q def=%v) = %v, want %v", c.set, c.val, c.def, got, c.want)
+		}
+	}
+}
+
+// staticDisc is a no-agent Discoverer for handler wiring tests.
+type staticDisc struct{}
+
+func (staticDisc) Agents(context.Context) ([]discovery.Agent, error) { return nil, nil }
 
 func TestEnvBool(t *testing.T) {
 	const name = "PORTREACH_AGENT_METRICS_PUBLIC"

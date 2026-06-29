@@ -64,6 +64,49 @@ spec:
             - --auth-config
             - /etc/portreach/auth/auth.yaml
             {{- end }}
+            {{- if .Values.ui.rateLimit.enabled }}
+            - --rate-limit
+            {{- with .Values.ui.rateLimit.user.rate }}
+            - --rate-user-rate
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.rateLimit.user.burst }}
+            - --rate-user-burst
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.rateLimit.target.rate }}
+            - --rate-target-rate
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.rateLimit.target.burst }}
+            - --rate-target-burst
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.rateLimit.global.rate }}
+            - --rate-global-rate
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.rateLimit.global.burst }}
+            - --rate-global-burst
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.ui.trustedProxies }}
+            - --trusted-proxies
+            - {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.ui.forwardedHeader }}
+            - --forwarded-header
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.rateLimit.maxAgentsPerCheck }}
+            - --max-agents-per-check
+            - {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.rateLimit.maxConcurrentFanout }}
+            - --max-concurrent-fanout
+            - {{ . | quote }}
+            {{- end }}
             {{- with .Values.ui.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
