@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -117,6 +118,51 @@ func TestBuildUIHandlerEnabledGatesAndAnnounces(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/auth/login") {
 		t.Errorf("redirect = %q, want /auth/login", loc)
+	}
+}
+
+// TestBuildUIHandlerAPIOnlyEnablesBearerGate verifies the bearer-only wiring: a
+// config with an `api` entry and no `providers` (and no cookieKey) still enables
+// auth, gating /api/* behind a token while keeping /healthz public.
+func TestBuildUIHandlerAPIOnlyEnablesBearerGate(t *testing.T) {
+	// Minimal OIDC issuer: discovery is all auth.New needs at startup (JWKS is
+	// fetched lazily on the first token verification, which this test never does).
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+			srv.URL, srv.URL+"/authorize", srv.URL+"/token", srv.URL+"/jwks")
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+
+	path := writeAuthConfig(t, "auth:\n  api:\n    - id: ci\n      issuer: "+srv.URL+"\n      audience: portreach\n")
+	var out bytes.Buffer
+	h, err := buildUIHandler(nil, time.Second, path, &out)
+	if err != nil {
+		t.Fatalf("bearer-only config should build: %v", err)
+	}
+	// Startup banner records the api entry id, no secrets.
+	if !strings.Contains(out.String(), "ci") {
+		t.Errorf("startup notice missing api id, got %q", out.String())
+	}
+
+	// /healthz stays public.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz = %d, want 200", rec.Code)
+	}
+
+	// /api/check without a token → 401 JSON (never a redirect to a login page).
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/check", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/api/check no token = %d, want 401", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Errorf("API-only mode must not redirect, got Location=%q", loc)
 	}
 }
 

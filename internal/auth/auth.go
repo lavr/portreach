@@ -74,12 +74,13 @@ type oauthState struct {
 // Authenticator owns the configured providers and the auth HTTP handlers. It is
 // built once at startup from a validated Config.
 type Authenticator struct {
-	cfg       *Config
-	providers map[string]Provider
-	pcs       map[string]ProviderConfig // provider id -> config (allowlists)
-	order     []string                  // provider ids in config order
-	logger    *slog.Logger              // audit logger; nil falls back to slog.Default()
-	branding  LoginBranding
+	cfg        *Config
+	providers  map[string]Provider
+	pcs        map[string]ProviderConfig // provider id -> config (allowlists)
+	order      []string                  // provider ids in config order
+	apiEntries []*apiEntry               // bearer-token issuers, in config order
+	logger     *slog.Logger              // audit logger; nil falls back to slog.Default()
+	branding   LoginBranding
 }
 
 // New builds an Authenticator from cfg, constructing one Provider per configured
@@ -122,6 +123,18 @@ func New(cfg *Config, opts ...Option) (*Authenticator, error) {
 		a.providers[pc.ID] = p
 		a.pcs[pc.ID] = pc
 		a.order = append(a.order, pc.ID)
+	}
+	// Build one JWT verifier per API bearer entry. Like GitLab/OIDC providers
+	// above, this runs OIDC discovery against each issuer, so New may make network
+	// calls; the same startup discovery timeout bounds each.
+	for _, e := range cfg.API {
+		dctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
+		ae, err := newAPIEntry(dctx, e)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("auth: api entry %q: %w", e.ID, err)
+		}
+		a.apiEntries = append(a.apiEntries, ae)
 	}
 	return a, nil
 }

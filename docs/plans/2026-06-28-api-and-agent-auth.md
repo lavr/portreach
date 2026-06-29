@@ -121,28 +121,28 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 ## Implementation Steps
 
 ### Task 1: Accept IdP bearer tokens on the UI API (independent of browser SSO)
-- [ ] **split browser vs API config (#R1)**: add an `api` block to `auth.Config` — a
+- [x] **split browser vs API config (#R1)**: add an `api` block to `auth.Config` — a
       list of entries `{id, issuer, audience, allowedGroups/allowedUsers}` **plus claim
       mapping**: `type`/preset (for fallbacks like GitLab `groups_direct`),
       `usernameClaim`, `groupsClaim` (defaults mirror the browser OIDC path —
       `config.go:84`, `presets.go:70`); without these, bearer RBAC breaks on access
       tokens whose group/username claims differ from the defaults (Medium #2). Required
       fields: `issuer`+`audience` only (no `clientSecret`, no `cookieKey`)
-- [ ] **id + pair uniqueness (High #1)**: enforce **globally unique `id`** across API
+- [x] **id + pair uniqueness (High #1)**: enforce **globally unique `id`** across API
       entries **and** browser `providers` (the combined registry in Task 2 is keyed by
       `id`; a collision would bind allowlist/audit to the wrong entry), extending the
       browser-only uniqueness check (`config.go:269`); also enforce unique
       `(issuer, audience)` across API entries
-- [ ] redefine `Config.Enabled()` = browser-enabled **OR** api-enabled; `Validate()`
+- [x] redefine `Config.Enabled()` = browser-enabled **OR** api-enabled; `Validate()`
       applies browser rules (providers+cookieKey+clientSecret) only when browser is
       configured, and api rules (issuer+audience, unique pair) only when api is
       configured — so **bearer-only is valid** with no providers and no cookieKey
-- [ ] build an access-token verifier per API entry from its issuer
+- [x] build an access-token verifier per API entry from its issuer
       (`oidc.NewProvider(issuer).Verifier(&oidc.Config{ClientID: audience})`, checking
       `aud`/`iss`/`exp`/sig); map claims → `Session` (username + groups) **with
       `Session.Provider` = the matched API entry's `id`** (finding #2), matched by
       `(iss, aud)`
-- [ ] **explicit route semantics (High #1)** in `Middleware` (`middleware.go:13` today
+- [x] **explicit route semantics (High #1)** in `Middleware` (`middleware.go:13` today
       redirects every non-`/auth/*`, non-`/healthz` path to the login page):
       - `/api/*`: accept bearer (if api configured) **or** cookie (if browser configured);
         on failure **401 JSON, never a redirect** (it's an API).
@@ -152,19 +152,19 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
         so return 401** instead of redirecting to an empty login page.
       - `/healthz`, `/auth/*`: unchanged. A token matching no configured api entry → 401
         (never `WithIdentity`).
-- [ ] `runUI`/handler builder: enable the bearer path whenever an API entry is
+- [x] `runUI`/handler builder: enable the bearer path whenever an API entry is
       configured, even with no browser providers
-- [ ] **env expansion (Low #5)**: route the new API-entry fields (`issuer`, `audience`,
+- [x] **env expansion (Low #5)**: route the new API-entry fields (`issuer`, `audience`,
       `usernameClaim`, `groupsClaim`, `allowedGroups`, `allowedUsers`) through the same
       `${ENV}` expansion the loader already does for provider fields/allowlists
       (`config.go:160`)
-- [ ] write tests: valid token authenticates with the right provider id; bad
+- [x] write tests: valid token authenticates with the right provider id; bad
       sig/issuer/audience/expired → 401; unmatched-issuer token → 401 (fail-closed);
       cookie still works; bearer disabled when unconfigured; bearer-only (no SSO) works;
       **API-only route tests**: `/api/check` without token → 401 JSON, with token → 200;
       **`/` in API-only mode → 401 (not a redirect to an empty login page)**; env-expanded
       issuer/audience/claims resolved
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Uniform RBAC + audit for token identities (fail-closed)
 - [ ] **unified allowlist lookup (High #1)**: today `allowed()` reads only

@@ -303,6 +303,122 @@ func TestValidate(t *testing.T) {
 			t.Fatalf("google with hd should validate: %v", err)
 		}
 	})
+
+	t.Run("api-only-valid-no-cookie-no-providers", func(t *testing.T) {
+		// Bearer-only mode: no providers, no cookieKey required.
+		c := &Config{API: []APIEntry{{ID: "ci", Issuer: "https://idp/realm", Audience: "portreach"}}}
+		if !c.Enabled() {
+			t.Fatal("api entry should enable the config")
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("bearer-only config should validate: %v", err)
+		}
+	})
+
+	t.Run("api-missing-issuer", func(t *testing.T) {
+		c := &Config{API: []APIEntry{{ID: "ci", Audience: "portreach"}}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "issuer") || !strings.Contains(err.Error(), "ci") {
+			t.Fatalf("want issuer error naming entry, got %v", err)
+		}
+	})
+
+	t.Run("api-missing-audience", func(t *testing.T) {
+		c := &Config{API: []APIEntry{{ID: "ci", Issuer: "https://idp/realm"}}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "audience") || !strings.Contains(err.Error(), "ci") {
+			t.Fatalf("want audience error naming entry, got %v", err)
+		}
+	})
+
+	t.Run("api-empty-id", func(t *testing.T) {
+		c := &Config{API: []APIEntry{{Issuer: "https://idp/realm", Audience: "portreach"}}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "id") {
+			t.Fatalf("want id error, got %v", err)
+		}
+	})
+
+	t.Run("api-dup-pair", func(t *testing.T) {
+		c := &Config{API: []APIEntry{
+			{ID: "a", Issuer: "https://idp/realm", Audience: "portreach"},
+			{ID: "b", Issuer: "https://idp/realm", Audience: "portreach"},
+		}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "issuer, audience") {
+			t.Fatalf("want duplicate (issuer, audience) error, got %v", err)
+		}
+	})
+
+	t.Run("api-dup-pair-distinct-audience-ok", func(t *testing.T) {
+		c := &Config{API: []APIEntry{
+			{ID: "a", Issuer: "https://idp/realm", Audience: "portreach"},
+			{ID: "b", Issuer: "https://idp/realm", Audience: "portreach-ci"},
+		}}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("distinct audiences on one issuer should validate: %v", err)
+		}
+	})
+
+	t.Run("api-unknown-groupMatch", func(t *testing.T) {
+		c := &Config{API: []APIEntry{{ID: "ci", Issuer: "https://idp/realm", Audience: "portreach", GroupMatch: "prefix"}}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "groupMatch") {
+			t.Fatalf("want groupMatch error, got %v", err)
+		}
+	})
+
+	t.Run("api-id-collides-with-provider", func(t *testing.T) {
+		// id must be globally unique across providers and API entries.
+		c := base()
+		c.API = []APIEntry{{ID: "gh", Issuer: "https://idp/realm", Audience: "portreach"}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("want duplicate id error across provider+api, got %v", err)
+		}
+	})
+
+	t.Run("browser-plus-api-valid", func(t *testing.T) {
+		c := base()
+		c.API = []APIEntry{{ID: "ci", Issuer: "https://idp/realm", Audience: "portreach"}}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("browser+api config should validate: %v", err)
+		}
+	})
+}
+
+func TestLoadConfigAPIEntries(t *testing.T) {
+	t.Setenv("API_ISSUER", "https://idp.corp/realm")
+	t.Setenv("API_AUD", "portreach")
+	t.Setenv("API_GROUP", "platform")
+
+	path := writeConfig(t, `
+auth:
+  api:
+    - id: ci
+      type: gitlab
+      issuer: ${API_ISSUER}
+      audience: ${API_AUD}
+      allowedGroups:
+        - ${API_GROUP}
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Enabled() {
+		t.Fatal("api-only config should be enabled")
+	}
+	if cfg.browserEnabled() {
+		t.Fatal("api-only config must not report browser enabled")
+	}
+	if len(cfg.API) != 1 {
+		t.Fatalf("want 1 api entry, got %d", len(cfg.API))
+	}
+	e := cfg.API[0]
+	if e.Issuer != "https://idp.corp/realm" || e.Audience != "portreach" {
+		t.Errorf("env not expanded: issuer=%q audience=%q", e.Issuer, e.Audience)
+	}
+	if len(e.AllowedGroups) != 1 || e.AllowedGroups[0] != "platform" {
+		t.Errorf("allowedGroups not expanded: %v", e.AllowedGroups)
+	}
+	if e.GroupMatch != GroupMatchExact {
+		t.Errorf("groupMatch default = %q, want exact", e.GroupMatch)
+	}
 }
 
 func TestLoadConfigBadCookieKey(t *testing.T) {

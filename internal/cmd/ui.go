@@ -111,9 +111,16 @@ func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfig
 	for _, p := range cfg.Providers {
 		ids = append(ids, p.ID)
 	}
+	apiIDs := make([]string, 0, len(cfg.API))
+	for _, e := range cfg.API {
+		apiIDs = append(apiIDs, e.ID)
+	}
 	// Emit the startup banner through the same JSON logger so it does not
-	// interleave a plain-text line into the audit log pipeline on stdout.
-	logger.Info("ui: SSO auth enabled", slog.String("providers", strings.Join(ids, ", ")))
+	// interleave a plain-text line into the audit log pipeline on stdout. Either
+	// list may be empty (browser-only or bearer-only deployments are both valid).
+	logger.Info("ui: auth enabled",
+		slog.String("providers", strings.Join(ids, ", ")),
+		slog.String("api", strings.Join(apiIDs, ", ")))
 
 	// Gate first (injecting Identity into the context), then audit so the
 	// check events carry the authenticated user.
