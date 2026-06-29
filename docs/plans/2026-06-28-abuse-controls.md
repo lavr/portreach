@@ -287,7 +287,7 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       (ratelimit 89.0%, ui 90.7%, probe 94.6%, agent 94.3%, cmd 91.1%)
 
 ### Task 8: [Final] Knowledge
-- [ ] note the limiter, bounded fan-out, trusted-proxy, and metadata guard in
+- [x] note the limiter, bounded fan-out, trusted-proxy, and metadata guard in
       README/AGENTS.md
 
 *Note: ralphex auto-moves completed plans to `docs/plans/completed/`.*

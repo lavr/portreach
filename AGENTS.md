@@ -14,10 +14,18 @@ are aggregated in a web UI. Single Go binary, three subcommands.
 
 - `main.go` — entrypoint; sets `version` (via ldflags) and dispatches to `internal/cmd`.
 - `internal/cmd` — CLI dispatch + per-subcommand flag/env wiring (`agent`, `ui`, `version`).
-- `internal/agent` — the probe HTTP server (`/check`, `/healthz`, `/metrics`).
-- `internal/probe` — TCP + DNS + latency probing.
+- `internal/agent` — the probe HTTP server (`/check`, `/healthz`, `/metrics`); installs
+  the default-on cloud-metadata connect guard (link-local `169.254.0.0/16` + IPv6
+  `fd00:ec2::254`, off with `--allow-metadata`; operator `--deny` is independent and wins).
+- `internal/probe` — TCP + DNS + latency probing; the metadata guard is a connect-time
+  `net.Dialer.Control` check (not policy pre-resolve), surfaced as `Result.Denied`.
 - `internal/discovery` — agent discovery (static CSV list + DNS A-records).
+- `internal/ratelimit` — optional reservation-based token-bucket limiter (per-user,
+  per-target, global; atomic multi-bucket reserve + rollback) used by UI and agent.
 - `internal/ui` — UI fan-out aggregator, JSON API, server-rendered web form (`web/index.html`).
+  The aggregator's per-check fan-out is optionally bounded (`maxAgentsPerCheck` /
+  `maxConcurrentFanout`, both `0` = unlimited = today's every-node behaviour; drops are
+  reported via explicit `discovered`/`queried`/`dropped` counts, never silent).
 - `internal/auth` — optional UI auth, off unless configured. Two independent paths
   resolving to the same `Session`/RBAC: browser SSO (GitHub OAuth2 + generic OIDC
   presets, sealed-cookie session) and **API bearer** (OIDC/JWT access tokens validated
@@ -70,12 +78,28 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
   (success + error paths). Target ≥ 80% coverage on touched packages.
 - **Dependencies are intentionally minimal.** The core started stdlib-only; the
   only external deps (`golang.org/x/oauth2`, `github.com/coreos/go-oidc/v3`,
-  `golang.org/x/text`, `gopkg.in/yaml.v3`) were added for SSO/OIDC/i18n. Don't add
-  new deps casually — prefer stdlib; if a dep is warranted, justify it.
+  `golang.org/x/text`, `gopkg.in/yaml.v3`, `golang.org/x/time/rate` for the rate
+  limiter) were added for SSO/OIDC/i18n and abuse controls. Don't add new deps
+  casually — prefer stdlib; if a dep is warranted, justify it.
 - **Security-sensitive surfaces**: the UI triggers outbound connections from every
   node (SSRF surface) and `internal/auth` handles cookies/tokens/allowlists. Treat
   changes there carefully; preserve the fail-closed behavior and the existing
   timeout/deadline clamps.
+- **Abuse controls** (all backward-compatible defaults — see `docs/configuration.md`):
+  - *Rate limiter* (`internal/ratelimit`, off by default): reservations are taken from
+    every applicable bucket and **all cancelled** if any denies, so a rejected request
+    burns no unrelated tokens; over limit → `429` + `Retry-After` from the reservation
+    delay. Identity key = authed user > proxy-trusted forwarded IP > `RemoteAddr`; a
+    forwarded header is trusted only when `RemoteAddr` ∈ `--trusted-proxies`.
+  - *Bounded fan-out* (`maxAgentsPerCheck` / `maxConcurrentFanout`, both `0` = unlimited):
+    when capped, agents are sorted by `Addr` for **deterministic** selection and drops
+    are reported (`discovered`/`queried`/`dropped`); never spawn a zero-worker pool.
+  - *Metadata guard* (default **on**): a connect-time `net.Dialer.Control` check that a
+    denied IP is never connected to — **not** policy pre-resolve, so CNAME/DNS-error
+    reporting for normal targets is unchanged. A mixed RRset whose allowed sibling
+    connects first may still return OK; only a name resolving **solely** to denied IP(s)
+    yields `Result.Denied`. Guard-hit uses an `atomic.Bool` (the dial path is concurrent
+    — run `-race`). `--allow-metadata` removes only this built-in set; `--deny` wins.
 - **Two auth boundaries** (both backward-compatible — unset → today's open behaviour):
   - *UI API*: a request to `/api/*` is authenticated by **either** a browser session
     cookie **or** `Authorization: Bearer <JWT>` (see `internal/auth` above). API-only
