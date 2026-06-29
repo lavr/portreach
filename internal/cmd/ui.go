@@ -136,3 +136,13 @@ func envInt(name string, def int) int {
 	}
 	return def
 }
+
+// envBool returns the boolean value of env var name, or def when unset/invalid.
+func envBool(name string, def bool) bool {
+	if v := os.Getenv(name); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
+}

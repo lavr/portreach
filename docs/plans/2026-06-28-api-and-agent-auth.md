@@ -183,17 +183,17 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 - [x] run tests — must pass before Task 3
 
 ### Task 3: Agent bearer-token auth (+ /metrics gating, single listener)
-- [ ] `internal/cmd/agent.go`: `--auth-token`/`PORTREACH_AGENT_TOKEN`,
+- [x] `internal/cmd/agent.go`: `--auth-token`/`PORTREACH_AGENT_TOKEN`,
       `--metrics-public` (default false). **No second listener in v1 (#R3)** — keep the
       single `http.Server` (`agent.go:124`); a separate metrics bind is deferred
-- [ ] `internal/agent`: token set → require `Authorization: Bearer <token>` (constant-
+- [x] `internal/agent`: token set → require `Authorization: Bearer <token>` (constant-
       time compare) on `/check` **and `/metrics`** → 401 on missing/wrong; `/healthz`
       always open; `--metrics-public` re-opens `/metrics` (only) for Prometheus,
       documented as a deliberate choice
-- [ ] empty token → no check (backward compatible)
-- [ ] write tests: `/check` + `/metrics` 401 without token, 200 with; `/healthz` open;
+- [x] empty token → no check (backward compatible)
+- [x] write tests: `/check` + `/metrics` 401 without token, 200 with; `/healthz` open;
       `--metrics-public` opens `/metrics` but `/check` stays gated; disabled = open
-- [ ] run tests — must pass before Task 4
+- [x] run tests — must pass before Task 4
 
 ### Task 4: UI sends the agent token
 - [ ] `internal/cmd/ui.go`: read agent token (`--agent-token`/`PORTREACH_AGENT_TOKEN`),
