@@ -256,17 +256,17 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 - [x] run tests — must pass before Task 5
 
 ### Task 5: Optional agent-side limiter + Helm wiring
-- [ ] `internal/cmd/agent.go`: `--rate-*` per-process/per-target cap on `/check`
+- [x] `internal/cmd/agent.go`: `--rate-*` per-process/per-target cap on `/check`
       (defence in depth for direct calls); unset = unlimited
-- [ ] `values.yaml`+`values.schema.json`: `ui.rateLimit` / `agent.rateLimit`
+- [x] `values.yaml`+`values.schema.json`: `ui.rateLimit` / `agent.rateLimit`
       (enabled, rate, burst, global, `maxAgentsPerCheck`, `maxConcurrentFanout`),
       `ui.trustedProxies`, and `agent.targetPolicy.allowMetadata` (default false → denied)
-- [ ] render the `--rate-*` / `--trusted-proxies` / metadata flags; ensure the metadata
+- [x] render the `--rate-*` / `--trusted-proxies` / metadata flags; ensure the metadata
       guard is on unless `allowMetadata: true`
-- [ ] extend `internal/charttest` (limiter+fanout+proxy args; metadata guard default-on,
+- [x] extend `internal/charttest` (limiter+fanout+proxy args; metadata guard default-on,
       off when allowed); `helm lint`
-- [ ] write tests for the agent limiter (throttles over limit, open when unset)
-- [ ] run tests — must pass before Task 6
+- [x] write tests for the agent limiter (throttles over limit, open when unset)
+- [x] run tests — must pass before Task 6
 
 ### Task 6: Documentation
 - [ ] `docs/configuration.md`: rate-limit knobs (per-user/per-target/global,

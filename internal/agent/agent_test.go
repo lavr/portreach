@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/lavr/portreach/internal/ratelimit"
 )
 
 // fakeResolver returns a fixed answer for any host, letting tests drive the
@@ -486,6 +489,73 @@ func TestAgentNoTokenOpen(t *testing.T) {
 	}
 	if resp, _ := getAuth(t, srv.URL, "/metrics", ""); resp.StatusCode != http.StatusOK {
 		t.Fatalf("/metrics open: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestAgentRateLimit verifies the optional /check limiter throttles direct calls
+// over the per-target limit (429 + Retry-After) while a different target keys a
+// separate bucket and the throttle is counted in /metrics. A frozen clock makes
+// it hermetic — no real sleeps, no refill between calls.
+func TestAgentRateLimit(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	fixed := time.Now()
+	lim, err := ratelimit.New(ratelimit.Config{
+		Enabled: true,
+		Target:  ratelimit.Scope{Rate: 1, Burst: 1},
+	}, ratelimit.WithClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatalf("ratelimit.New: %v", err)
+	}
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithLimiter(lim)).Handler())
+	defer srv.Close()
+
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+
+	// First call to this target spends the single burst token → allowed.
+	if resp, body := get(t, srv.URL, check); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first call: status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	// Second call (clock frozen, no refill) → throttled with a Retry-After hint.
+	resp, body := get(t, srv.URL, check)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second call: status = %d, want 429; body=%s", resp.StatusCode, body)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Errorf("429 response missing Retry-After header")
+	}
+	if !strings.Contains(string(body), "rate limit exceeded") {
+		t.Errorf("expected rate-limit message, got %s", body)
+	}
+
+	// A different target keys a different bucket → still allowed (per-target).
+	other := fmt.Sprintf("/check?host=localhost&port=%d", port)
+	if resp, body := get(t, srv.URL, other); resp.StatusCode != http.StatusOK {
+		t.Fatalf("other target: status = %d, want 200 (per-target isolation); body=%s", resp.StatusCode, body)
+	}
+
+	// The throttle is observable in /metrics.
+	_, mbody := get(t, srv.URL, "/metrics")
+	if !strings.Contains(string(mbody), `portreach_checks_total{result="throttled"} 1`) {
+		t.Errorf("expected throttled=1, got %s", mbody)
+	}
+}
+
+// TestAgentRateLimitUnsetUnlimited verifies that without a limiter /check stays
+// unlimited (today's behaviour): repeated calls to the same target all pass.
+func TestAgentRateLimitUnsetUnlimited(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := httptest.NewServer(New("testnode", &Policy{}).Handler())
+	defer srv.Close()
+
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+	for i := 0; i < 5; i++ {
+		if resp, body := get(t, srv.URL, check); resp.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: status = %d, want 200 (unlimited); body=%s", i, resp.StatusCode, body)
+		}
 	}
 }
 

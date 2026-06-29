@@ -13,6 +13,8 @@ package ratelimit
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -242,6 +244,18 @@ func (l *Limiter) Reserve(identityKey, targetKey string) Reservation {
 		return Reservation{OK: false, RetryAfter: maxDelay}
 	}
 	return Reservation{OK: true}
+}
+
+// RetryAfterSeconds renders a Reservation.RetryAfter as a Retry-After header
+// value: whole seconds rounded up, floored at 1 so a sub-second hint never
+// serializes as "0" (which clients read as "retry immediately", defeating the
+// throttle). Shared by the UI and agent throttle responses.
+func RetryAfterSeconds(d time.Duration) string {
+	secs := int(math.Ceil(d.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	return strconv.Itoa(secs)
 }
 
 // maybeEvict sweeps idle buckets periodically to keep memory bounded.

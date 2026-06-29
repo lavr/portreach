@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lavr/portreach/internal/probe"
+	"github.com/lavr/portreach/internal/ratelimit"
 )
 
 // Policy restricts which target IPs an agent may connect to, mitigating use of
@@ -99,10 +100,11 @@ func (p *Policy) Allowed(ip net.IP) bool {
 }
 
 type metrics struct {
-	ok     atomic.Int64
-	fail   atomic.Int64
-	denied atomic.Int64
-	badReq atomic.Int64
+	ok        atomic.Int64
+	fail      atomic.Int64
+	denied    atomic.Int64
+	badReq    atomic.Int64
+	throttled atomic.Int64
 }
 
 // ipResolver resolves a hostname to its IP addresses. *net.Resolver satisfies
@@ -126,6 +128,10 @@ type Server struct {
 	// allowMetadata, when set via WithAllowMetadata, removes the built-in metadata
 	// guard. The operator Policy (--deny) is unaffected.
 	allowMetadata bool
+
+	// limiter, when non-nil, gates /check as defence-in-depth for direct calls
+	// (see WithLimiter). Nil = unlimited, the backward-compatible default.
+	limiter *ratelimit.Limiter
 
 	// token, when non-empty, is the shared bearer secret required on /check and
 	// (unless metricsPublic) /metrics. Empty disables the check entirely, keeping
@@ -268,6 +274,20 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Defence-in-depth rate limit on direct /check calls. Gate after validation
+	// (so a valid host:port keys the bucket) but before any DNS/dial work, so a
+	// throttled request is cheap. A nil limiter always allows (unlimited).
+	if retry, ok := s.allow(host, port); !ok {
+		s.metrics.throttled.Add(1)
+		ra := ratelimit.RetryAfterSeconds(retry)
+		w.Header().Set("Retry-After", ra)
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error":       "rate limit exceeded",
+			"retry_after": ra,
+		})
+		return
+	}
+
 	// Bound the policy DNS resolution by the same capped timeout the probe uses.
 	// resolveTarget's LookupIPAddr runs before the probe and would otherwise sit
 	// on the bare request context (no deadline), letting a hostile or blackholed
@@ -372,6 +392,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "portreach_checks_total{result=\"fail\"} %d\n", s.metrics.fail.Load())
 	fmt.Fprintf(&b, "portreach_checks_total{result=\"denied\"} %d\n", s.metrics.denied.Load())
 	fmt.Fprintf(&b, "portreach_checks_total{result=\"bad_request\"} %d\n", s.metrics.badReq.Load())
+	fmt.Fprintf(&b, "portreach_checks_total{result=\"throttled\"} %d\n", s.metrics.throttled.Load())
 	_, _ = io.WriteString(w, b.String())
 }
 

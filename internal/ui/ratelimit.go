@@ -2,7 +2,6 @@ package ui
 
 import (
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -95,13 +94,8 @@ func (s *Server) logDrop(r *http.Request, target Target, discovered, queried, dr
 	)
 }
 
-// retryAfterSeconds renders a Retry-After header value: whole seconds rounded up,
-// floored at 1 so a sub-second hint never serializes as "0" (which clients read
-// as "retry immediately", defeating the throttle).
+// retryAfterSeconds renders the Retry-After header value via the shared limiter
+// helper (whole seconds rounded up, floored at 1).
 func retryAfterSeconds(d time.Duration) string {
-	secs := int(math.Ceil(d.Seconds()))
-	if secs < 1 {
-		secs = 1
-	}
-	return strconv.Itoa(secs)
+	return ratelimit.RetryAfterSeconds(d)
 }

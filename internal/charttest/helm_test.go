@@ -512,6 +512,97 @@ func TestChartAgentTokenOff(t *testing.T) {
 	}
 }
 
+const abuseControlValues = `
+ui:
+  rateLimit:
+    enabled: true
+    user:
+      rate: 2
+      burst: 5
+    target:
+      rate: 1
+      burst: 3
+    global:
+      rate: 10
+      burst: 20
+    maxAgentsPerCheck: 4
+    maxConcurrentFanout: 8
+  trustedProxies: [10.0.0.0/8, 192.168.1.1]
+  forwardedHeader: X-Real-IP
+agent:
+  targetPolicy:
+    allowMetadata: true
+  rateLimit:
+    enabled: true
+    target:
+      rate: 5
+      burst: 7
+    global:
+      rate: 50
+      burst: 100
+`
+
+// TestChartAbuseControls: the rate-limit / fan-out / trusted-proxy knobs render
+// the matching binary flags on the UI Deployment, and the agent rate-limit +
+// allowMetadata opt-out render on the DaemonSet.
+func TestChartAbuseControls(t *testing.T) {
+	requireHelm(t)
+	vals := writeValues(t, abuseControlValues)
+
+	dep := helmTemplate(t, "-f", vals, "--show-only", "templates/deployment-ui.yaml")
+	for _, want := range []string{
+		"--rate-limit",
+		"--rate-user-rate", "--rate-user-burst",
+		"--rate-target-rate", "--rate-target-burst",
+		"--rate-global-rate", "--rate-global-burst",
+		"--trusted-proxies", "10.0.0.0/8,192.168.1.1",
+		"--forwarded-header", "X-Real-IP",
+		"--max-agents-per-check", "--max-concurrent-fanout",
+	} {
+		if !strings.Contains(dep, want) {
+			t.Errorf("ui deployment missing %q\n---\n%s", want, dep)
+		}
+	}
+
+	ds := helmTemplate(t, "-f", vals, "--show-only", "templates/daemonset-agent.yaml")
+	for _, want := range []string{
+		"--allow-metadata",
+		"--rate-limit",
+		"--rate-target-rate", "--rate-target-burst",
+		"--rate-global-rate", "--rate-global-burst",
+	} {
+		if !strings.Contains(ds, want) {
+			t.Errorf("agent daemonset missing %q\n---\n%s", want, ds)
+		}
+	}
+	// The agent has no per-user identity, so it must not render the user scope.
+	if strings.Contains(ds, "--rate-user-rate") {
+		t.Errorf("agent daemonset unexpectedly renders the user scope\n---\n%s", ds)
+	}
+}
+
+// TestChartAbuseControlsDefaultOff: the default render carries no rate-limit /
+// fan-out / proxy flags, and the metadata guard is left on (no --allow-metadata,
+// which would *remove* it).
+func TestChartAbuseControlsDefaultOff(t *testing.T) {
+	requireHelm(t)
+	dep := helmTemplate(t, "--show-only", "templates/deployment-ui.yaml")
+	for _, unwanted := range []string{
+		"--rate-limit", "--trusted-proxies", "--forwarded-header",
+		"--max-agents-per-check", "--max-concurrent-fanout",
+	} {
+		if strings.Contains(dep, unwanted) {
+			t.Errorf("default ui deployment unexpectedly contains %q\n---\n%s", unwanted, dep)
+		}
+	}
+	ds := helmTemplate(t, "--show-only", "templates/daemonset-agent.yaml")
+	for _, unwanted := range []string{"--rate-limit", "--allow-metadata"} {
+		if strings.Contains(ds, unwanted) {
+			t.Errorf("default agent daemonset unexpectedly contains %q (metadata guard must stay on)\n---\n%s", unwanted, ds)
+		}
+	}
+}
+
 // TestChartNetworkPolicy: opt-in NP renders ingress/egress selectors binding the
 // UI and agent pods (best-effort second layer; off by default).
 func TestChartNetworkPolicy(t *testing.T) {
@@ -728,11 +819,13 @@ func TestChartLint(t *testing.T) {
 	external := writeValues(t, authExternalValues)
 	inline := writeValues(t, authInlineValues)
 	apiOnly := writeValues(t, authAPIOnlyValues)
+	abuse := writeValues(t, abuseControlValues)
 	for _, args := range [][]string{
 		{"lint", chartDir},
 		{"lint", chartDir, "-f", external},
 		{"lint", chartDir, "-f", inline},
 		{"lint", chartDir, "-f", apiOnly},
+		{"lint", chartDir, "-f", abuse},
 		{"lint", chartDir, "--set", "agent.auth.token=s3cr3t-token", "--set", "agent.metricsPublic=true"},
 	} {
 		out, err := exec.Command("helm", args...).CombinedOutput()
