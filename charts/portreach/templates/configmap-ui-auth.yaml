@@ -40,7 +40,12 @@
 {{- $_ := set $auth "providers" $providers -}}
 {{- end -}}
 {{- if $api -}}
-{{- /* Bearer-token issuers for /api/*; matched by (issuer, audience). */ -}}
+{{- /* Bearer-token issuers for /api/*; matched by (issuer, audience). An empty
+       list would render `api: []`, which the UI reads as api-disabled and leaves
+       the endpoint open — so fail closed, mirroring the browser guard above. */ -}}
+{{- if not ($a.api | default dict).entries -}}
+{{- fail "ui.auth.api is enabled but ui.auth.api.entries is empty" -}}
+{{- end -}}
 {{- $entries := list -}}
 {{- range (($a.api | default dict).entries | default list) -}}
   {{- $id := required "ui.auth.api.entries[].id is required" .id -}}

@@ -407,6 +407,20 @@ func TestChartAuthAPIOnly(t *testing.T) {
 	}
 }
 
+// TestChartAuthAPIEnabledNoEntries: enabling the API path with no entries would
+// render `api: []`, which the UI reads as api-disabled and leaves the endpoint
+// open. The chart must fail closed instead, mirroring the browser-providers guard.
+func TestChartAuthAPIEnabledNoEntries(t *testing.T) {
+	requireHelm(t)
+	out, err := helmTemplateErr(t, "--set", "ui.auth.api.enabled=true")
+	if err == nil {
+		t.Fatalf("api enabled with no entries should fail to render, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ui.auth.api.entries is empty") {
+		t.Errorf("expected an empty-entries failure message, got:\n%s", out)
+	}
+}
+
 // TestChartAuthLegacyToggle: a bare `ui.auth.enabled: true` keeps rendering the
 // browser path (back-compat) via the portreach.auth.browser.enabled helper.
 func TestChartAuthLegacyToggle(t *testing.T) {
