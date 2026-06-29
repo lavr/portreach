@@ -219,3 +219,32 @@ func TestBrandingFlagEnvResolutionAndExpansion(t *testing.T) {
 		t.Fatal("nil optional expansion should stay nil")
 	}
 }
+
+func TestEnvBool(t *testing.T) {
+	const name = "PORTREACH_AGENT_METRICS_PUBLIC"
+	cases := []struct {
+		val  string // "" means unset
+		set  bool
+		def  bool
+		want bool
+	}{
+		{val: "true", set: true, def: false, want: true},
+		{val: "false", set: true, def: true, want: false},
+		{val: "1", set: true, def: false, want: true},
+		{val: "0", set: true, def: true, want: false},
+		{val: "garbage", set: true, def: true, want: true},   // unparseable → default
+		{val: "garbage", set: true, def: false, want: false}, // unparseable → default
+		{set: false, def: true, want: true},                  // unset → default
+		{set: false, def: false, want: false},
+	}
+	for _, c := range cases {
+		if c.set {
+			t.Setenv(name, c.val)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+		if got := envBool(name, c.def); got != c.want {
+			t.Errorf("envBool(set=%v val=%q def=%v) = %v, want %v", c.set, c.val, c.def, got, c.want)
+		}
+	}
+}

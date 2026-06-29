@@ -206,6 +206,31 @@ func TestCheckAllNoTokenNoHeader(t *testing.T) {
 	}
 }
 
+// TestServerForwardsConfiguredAgentToken proves the full wiring: a token passed
+// to New via WithAgentToken reaches the agent on a real /api/check request, not
+// just the CheckAll helper exercised in isolation above.
+func TestServerForwardsConfiguredAgentToken(t *testing.T) {
+	var got string
+	agent := capturingAgent(t, &got)
+	defer agent.Close()
+
+	disc := staticList{{Addr: addr(agent)}}
+	srv := httptest.NewServer(New(disc, time.Second, WithAgentToken("s3cret")).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got != "Bearer s3cret" {
+		t.Errorf("agent saw Authorization = %q, want %q", got, "Bearer s3cret")
+	}
+}
+
 func TestClampTimeout(t *testing.T) {
 	budget := 8 * time.Second
 	cases := []struct {

@@ -21,7 +21,7 @@ const bearerVerifyTimeout = 15 * time.Second
 // (issuer, audience) — implemented as "the verifier whose iss/aud the token
 // satisfies" — and the entry's id becomes Session.Provider.
 type apiEntry struct {
-	cfg            APIEntry
+	id             string // becomes Session.Provider for tokens this entry accepts
 	verifier       *oidc.IDTokenVerifier
 	usernameClaim  string
 	groupsClaim    string
@@ -69,7 +69,7 @@ func newAPIEntry(ctx context.Context, e APIEntry) (*apiEntry, error) {
 	}
 	username, groups, groupsFallback := resolveAPIClaims(e)
 	return &apiEntry{
-		cfg:            e,
+		id:             e.ID,
 		verifier:       provider.Verifier(&oidc.Config{ClientID: e.Audience}),
 		usernameClaim:  username,
 		groupsClaim:    groups,
@@ -132,7 +132,7 @@ func (a *Authenticator) authenticateBearer(ctx context.Context, token string) (S
 		return Session{
 			User:     login,
 			Name:     claimString(claims, "name"),
-			Provider: e.cfg.ID,
+			Provider: e.id,
 			Groups:   groups,
 			Expiry:   idToken.Expiry.Unix(),
 		}, true

@@ -127,6 +127,39 @@ func TestBearerGitLabPresetGroupsFallback(t *testing.T) {
 	}
 }
 
+func TestBearerEmailVerifiedGate(t *testing.T) {
+	// With UsernameClaim "email", an attacker-controllable email must be IdP-verified.
+	// Only an explicit email_verified:false is rejected; an absent claim is allowed
+	// (it is optional) and falls through to the email identity.
+	bi := newBearerIssuer(t)
+	a := newBearerAuth(t, APIEntry{ID: "ci", Issuer: bi.url, Audience: "portreach", UsernameClaim: "email"})
+
+	t.Run("verified-true authenticates as email", func(t *testing.T) {
+		tok := bi.mint(t, map[string]any{"email": "alice@corp.com", "email_verified": true})
+		sess, ok := a.authenticateBearer(t.Context(), tok)
+		if !ok || sess.User != "alice@corp.com" {
+			t.Fatalf("verified email: ok=%v user=%q, want alice@corp.com", ok, sess.User)
+		}
+	})
+
+	t.Run("verified-false rejects the whole token", func(t *testing.T) {
+		// An unverified email rejects the entry outright — it does not silently fall
+		// back to sub, since a sub-based identity was not what the config asked for.
+		tok := bi.mint(t, map[string]any{"email": "evil@corp.com", "email_verified": false, "sub": "svc"})
+		if _, ok := a.authenticateBearer(t.Context(), tok); ok {
+			t.Fatal("unverified email must not authenticate, even with a sub present")
+		}
+	})
+
+	t.Run("absent claim is allowed", func(t *testing.T) {
+		tok := bi.mint(t, map[string]any{"email": "bob@corp.com"})
+		sess, ok := a.authenticateBearer(t.Context(), tok)
+		if !ok || sess.User != "bob@corp.com" {
+			t.Fatalf("absent email_verified: ok=%v user=%q, want bob@corp.com", ok, sess.User)
+		}
+	})
+}
+
 func TestBearerRejects(t *testing.T) {
 	bi := newBearerIssuer(t)
 	other := newBearerIssuer(t)
@@ -323,6 +356,22 @@ func TestBearerDisabledWhenUnconfigured(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("bearer ignored when unconfigured: code=%d, want 302 redirect", rec.Code)
+	}
+
+	// On an /api/* path the cookie governs (no api entry honors the bearer), so a
+	// presented bearer is ignored and the missing cookie yields a 401 JSON — never
+	// an auth bypass that lets the handler run.
+	next2 := &okHandler{}
+	h = a.Middleware(next2)
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/check", nil)
+	apiReq.Header.Set("Authorization", "Bearer whatever")
+	apiRec := httptest.NewRecorder()
+	h.ServeHTTP(apiRec, apiReq)
+	if apiRec.Code != http.StatusUnauthorized {
+		t.Fatalf("bearer on /api/* when unconfigured: code=%d, want 401", apiRec.Code)
+	}
+	if next2.called {
+		t.Error("unconfigured bearer must not reach the /api/* handler")
 	}
 }
 

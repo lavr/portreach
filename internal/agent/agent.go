@@ -178,11 +178,12 @@ func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// authorized reports whether r presents the configured bearer token.
+// authorized reports whether r presents the configured bearer token. The scheme
+// match is case-insensitive per RFC 6750, matching the UI's bearer parsing.
 func (s *Server) authorized(r *http.Request) bool {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, prefix) {
+	if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
 		return false
 	}
 	got := strings.TrimSpace(h[len(prefix):])

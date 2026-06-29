@@ -62,6 +62,7 @@ func TestAuditCheckAPIAnonymous(t *testing.T) {
 	wantField(t, ev, "event", "check")
 	wantField(t, ev, "user", "anonymous")
 	wantField(t, ev, "provider", "")
+	wantField(t, ev, "auth_method", "") // no credential → empty, never a stray value
 	wantField(t, ev, "target", "db.internal:5432/tcp")
 	wantField(t, ev, "remote", "203.0.113.7:5555")
 }

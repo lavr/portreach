@@ -406,6 +406,34 @@ func TestAgentTokenGatesCheck(t *testing.T) {
 	}
 }
 
+// TestAgentTokenSchemeCaseInsensitive verifies the Authorization scheme match is
+// case-insensitive per RFC 6750 (so "bearer"/"BEARER" are accepted), matching the
+// UI's bearer parsing.
+func TestAgentTokenSchemeCaseInsensitive(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithToken("s3cret")).Handler())
+	defer srv.Close()
+
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+	for _, scheme := range []string{"bearer", "BEARER", "BeArEr"} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+check, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", scheme+" s3cret")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("scheme %q: status = %d, want 200", scheme, resp.StatusCode)
+		}
+	}
+}
+
 // TestAgentTokenGatesMetrics verifies /metrics is gated behind the token by
 // default while /healthz stays open even with a token set.
 func TestAgentTokenGatesMetrics(t *testing.T) {
