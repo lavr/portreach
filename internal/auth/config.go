@@ -96,6 +96,36 @@ type ProviderConfig struct {
 	HostedDomain  string   `yaml:"hostedDomain"`  // Google Workspace `hd` restriction (optional)
 }
 
+// APIEntry describes one accepted bearer-token issuer for the UI `/api/*`
+// surface (Boundary A). A request carrying `Authorization: Bearer <JWT>` is
+// matched to an entry by its (Issuer, Audience) pair and the JWT is validated
+// against that issuer's JWKS (signature + iss + aud + exp). The matched entry's
+// ID becomes Session.Provider so RBAC (allowlist) and audit resolve the right
+// allowlist — exactly as for a browser session.
+//
+// It is independent of browser SSO: configuring `api` entries enables the bearer
+// path even with no `providers`. Required fields are Issuer + Audience only — no
+// clientSecret and no cookieKey, since JWKS verification needs neither.
+type APIEntry struct {
+	ID       string `yaml:"id"`
+	Type     string `yaml:"type"`     // optional preset (e.g. gitlab) for claim-mapping fallbacks
+	Issuer   string `yaml:"issuer"`   // OIDC issuer URL (discovery base for JWKS)
+	Audience string `yaml:"audience"` // required `aud` the access token must carry
+
+	// Claim mapping. Defaults mirror the browser OIDC path (preferred_username,
+	// then sub, for the username; groups for the group list). A named Type pulls
+	// its preset's claim defaults and groups fallback (e.g. GitLab groups_direct)
+	// unless overridden here.
+	UsernameClaim string `yaml:"usernameClaim"`
+	GroupsClaim   string `yaml:"groupsClaim"`
+
+	// Per-entry allowlist, applied to bearer identities exactly like a browser
+	// provider's org/group list (the global AllowedUsers also applies).
+	AllowedGroups []string `yaml:"allowedGroups"`
+	AllowedUsers  []string `yaml:"allowedUsers"`
+	GroupMatch    string   `yaml:"groupMatch"` // exact (default) or subtree
+}
+
 // Config is the top-level auth configuration. CookieKey is the decoded 32-byte
 // AES-256 key; the YAML carries it as a hex/base64 string in CookieKeyRaw.
 type Config struct {
@@ -107,6 +137,10 @@ type Config struct {
 	CookieKeyRaw string           `yaml:"cookieKey"`
 	AllowedUsers []string         `yaml:"allowedUsers"`
 	Providers    []ProviderConfig `yaml:"providers"`
+
+	// API holds the bearer-token issuers accepted on `/api/*` (Boundary A). It is
+	// independent of Providers: either, both, or neither may be configured.
+	API []APIEntry `yaml:"api"`
 
 	// Host-derived callback mode (only consulted when RedirectURL is empty).
 	// ForwardedHostHeader / ForwardedProtoHeader name the request headers the
@@ -208,6 +242,26 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	for i := range cfg.API {
+		e := &cfg.API[i]
+		e.ID = expandEnv(e.ID)
+		e.Type = expandEnv(e.Type)
+		e.Issuer = expandEnv(e.Issuer)
+		e.Audience = expandEnv(e.Audience)
+		e.UsernameClaim = expandEnv(e.UsernameClaim)
+		e.GroupsClaim = expandEnv(e.GroupsClaim)
+		e.GroupMatch = expandEnv(e.GroupMatch)
+		for j := range e.AllowedGroups {
+			e.AllowedGroups[j] = expandEnv(e.AllowedGroups[j])
+		}
+		for j := range e.AllowedUsers {
+			e.AllowedUsers[j] = expandEnv(e.AllowedUsers[j])
+		}
+		if e.GroupMatch == "" {
+			e.GroupMatch = GroupMatchExact
+		}
+	}
+
 	if cfg.CookieKeyRaw != "" {
 		key, err := decodeCookieKey(cfg.CookieKeyRaw)
 		if err != nil {
@@ -238,10 +292,23 @@ func decodeCookieKey(s string) ([]byte, error) {
 	return nil, fmt.Errorf("cookieKey must decode (hex or base64) to %d bytes", cookieKeyLen)
 }
 
-// Enabled reports whether any provider is configured. With no providers the
-// auth middleware is a pass-through.
-func (c *Config) Enabled() bool {
+// browserEnabled reports whether browser SSO (provider login + session cookie)
+// is configured.
+func (c *Config) browserEnabled() bool {
 	return len(c.Providers) > 0
+}
+
+// apiEnabled reports whether the API bearer-token path is configured.
+func (c *Config) apiEnabled() bool {
+	return len(c.API) > 0
+}
+
+// Enabled reports whether any auth path — browser SSO or API bearer — is
+// configured. With neither, the auth middleware is a pass-through and the UI is
+// open (backward compatible). Browser and API are independent toggles: a
+// CI-only, headless deployment configures `api` with no `providers`.
+func (c *Config) Enabled() bool {
+	return c.browserEnabled() || c.apiEnabled()
 }
 
 // baseURLHint returns a short, human-friendly description of what a preset's
@@ -259,12 +326,72 @@ func baseURLHint(t string) string {
 	}
 }
 
-// Validate checks an enabled config for consistency. A disabled (no-provider)
-// config is always valid.
+// Validate checks an enabled config for consistency. A disabled config (neither
+// browser nor API configured) is always valid. Browser rules (cookieKey,
+// providers, clientSecret) apply only when browser SSO is configured; API rules
+// (issuer+audience, unique pair) apply only when the API path is configured — so
+// a bearer-only config with no providers and no cookieKey is valid.
+//
+// Provider ids are unique *globally* across browser providers and API entries:
+// the id keys both the audit attribution and the per-identity allowlist lookup,
+// so a collision would bind a request to the wrong entry.
 func (c *Config) Validate() error {
 	if !c.Enabled() {
 		return nil
 	}
+	// ids tracks every configured id (browser + API) to enforce global uniqueness.
+	ids := make(map[string]bool, len(c.Providers)+len(c.API))
+	if c.browserEnabled() {
+		if err := c.validateBrowser(ids); err != nil {
+			return err
+		}
+	}
+	if c.apiEnabled() {
+		if err := c.validateAPI(ids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateAPI checks the API bearer entries and registers their ids in the shared
+// ids set. Each entry requires a non-empty, globally-unique id plus issuer and
+// audience; the (issuer, audience) pair must be unique since it is the key used to
+// match an incoming token to an entry/allowlist.
+func (c *Config) validateAPI(ids map[string]bool) error {
+	pairs := make(map[string]bool, len(c.API))
+	for _, e := range c.API {
+		if e.ID == "" {
+			return fmt.Errorf("auth: api entry id must not be empty")
+		}
+		if ids[e.ID] {
+			return fmt.Errorf("auth: duplicate id %q", e.ID)
+		}
+		ids[e.ID] = true
+		if e.Issuer == "" {
+			return fmt.Errorf("auth: api entry %q requires an issuer", e.ID)
+		}
+		if e.Audience == "" {
+			return fmt.Errorf("auth: api entry %q requires an audience", e.ID)
+		}
+		pair := e.Issuer + "\x00" + e.Audience
+		if pairs[pair] {
+			return fmt.Errorf("auth: api entry %q has a duplicate (issuer, audience) pair", e.ID)
+		}
+		pairs[pair] = true
+		switch e.GroupMatch {
+		case "", GroupMatchExact, GroupMatchSubtree:
+			// ok (empty behaves like exact)
+		default:
+			return fmt.Errorf("auth: api entry %q has unknown groupMatch %q", e.ID, e.GroupMatch)
+		}
+	}
+	return nil
+}
+
+// validateBrowser checks the browser SSO config (cookie + providers) and
+// registers provider ids in the shared ids set.
+func (c *Config) validateBrowser(ids map[string]bool) error {
 	// RedirectURL is optional: empty selects host-derived callback mode, where
 	// the redirect_uri is computed per request from the incoming host (see
 	// Config.RedirectURL). A non-empty value pins one fixed callback.
@@ -277,15 +404,14 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("auth: cookieSecure must be %q, %q or %q", cookieSecureAuto, cookieSecureAlways, cookieSecureNever)
 	}
-	seen := make(map[string]bool, len(c.Providers))
 	for _, p := range c.Providers {
 		if p.ID == "" {
 			return fmt.Errorf("auth: provider id must not be empty")
 		}
-		if seen[p.ID] {
-			return fmt.Errorf("auth: duplicate provider id %q", p.ID)
+		if ids[p.ID] {
+			return fmt.Errorf("auth: duplicate id %q", p.ID)
 		}
-		seen[p.ID] = true
+		ids[p.ID] = true
 		switch p.Type {
 		case TypeGitHub, TypeGitLab, TypeGoogle:
 			// github is OAuth2+REST; gitlab and google have built-in default

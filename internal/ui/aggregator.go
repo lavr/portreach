@@ -45,15 +45,16 @@ type agentCheckResponse struct {
 // returns one AgentResult per agent. A failing agent yields a result with Error
 // set rather than aborting the whole fan-out. Results are ordered by agent addr
 // for stable output. The caller's ctx bounds the overall fan-out; client should
-// carry a per-request timeout.
-func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent, target Target) []AgentResult {
+// carry a per-request timeout. token, when non-empty, is sent as the agent
+// bearer token on every /check call; empty means no header (backward compatible).
+func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent, target Target, token string) []AgentResult {
 	results := make([]AgentResult, len(agents))
 	var wg sync.WaitGroup
 	for i, a := range agents {
 		wg.Add(1)
 		go func(i int, a discovery.Agent) {
 			defer wg.Done()
-			results[i] = checkOne(ctx, client, a, target)
+			results[i] = checkOne(ctx, client, a, target, token)
 		}(i, a)
 	}
 	wg.Wait()
@@ -63,8 +64,8 @@ func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent
 }
 
 // checkOne queries a single agent, normalizing transport and decode failures
-// into the Error field.
-func checkOne(ctx context.Context, client *http.Client, a discovery.Agent, target Target) AgentResult {
+// into the Error field. A non-empty token is attached as the agent bearer token.
+func checkOne(ctx context.Context, client *http.Client, a discovery.Agent, target Target, token string) AgentResult {
 	out := AgentResult{Agent: a.Addr}
 
 	q := url.Values{}
@@ -82,6 +83,11 @@ func checkOne(ctx context.Context, client *http.Client, a discovery.Agent, targe
 	if err != nil {
 		out.Error = err.Error()
 		return out
+	}
+	// Authenticate to the agent when a shared token is configured; an empty
+	// token leaves the request unauthenticated (today's open-agent behaviour).
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := client.Do(req)

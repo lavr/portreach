@@ -57,7 +57,7 @@ func TestCheckAllMixed(t *testing.T) {
 	defer failAgent.Close()
 
 	agents := []discovery.Agent{{Addr: addr(okAgent)}, {Addr: addr(failAgent)}}
-	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80})
+	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "")
 
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
@@ -98,7 +98,7 @@ func TestCheckAllPartialFailure(t *testing.T) {
 		{Addr: addr(errAgent)},
 		{Addr: deadAddr},
 	}
-	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80})
+	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "")
 
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3", len(results))
@@ -127,7 +127,7 @@ func TestCheckAllTimeout(t *testing.T) {
 
 	client := &http.Client{Timeout: 100 * time.Millisecond}
 	agents := []discovery.Agent{{Addr: addr(slow)}}
-	results := CheckAll(context.Background(), client, agents, Target{Host: "example", Port: 80})
+	results := CheckAll(context.Background(), client, agents, Target{Host: "example", Port: 80}, "")
 
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
@@ -144,7 +144,7 @@ func TestCheckAllTimeout(t *testing.T) {
 }
 
 func TestCheckAllEmpty(t *testing.T) {
-	results := CheckAll(context.Background(), newClient(), nil, Target{Host: "x", Port: 80})
+	results := CheckAll(context.Background(), newClient(), nil, Target{Host: "x", Port: 80}, "")
 	if len(results) != 0 {
 		t.Fatalf("got %d results, want 0", len(results))
 	}
@@ -159,12 +159,75 @@ func TestCheckAllDecodeError(t *testing.T) {
 	}))
 	defer bad.Close()
 
-	results := CheckAll(context.Background(), newClient(), []discovery.Agent{{Addr: addr(bad)}}, Target{Host: "x", Port: 80})
+	results := CheckAll(context.Background(), newClient(), []discovery.Agent{{Addr: addr(bad)}}, Target{Host: "x", Port: 80}, "")
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 	if !strings.Contains(results[0].Error, "decode response") {
 		t.Errorf("expected decode error, got %+v", results[0])
+	}
+}
+
+// capturingAgent records the Authorization header of the last /check request
+// and answers with a successful probe result.
+func capturingAgent(t *testing.T, got *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*got = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Node string `json:"node"`
+			probe.Result
+		}{Node: "n", Result: probe.Result{Proto: "tcp", TCP: &probe.DialResult{OK: true}}})
+	}))
+}
+
+func TestCheckAllAttachesAgentToken(t *testing.T) {
+	var got string
+	srv := capturingAgent(t, &got)
+	defer srv.Close()
+
+	agents := []discovery.Agent{{Addr: addr(srv)}}
+	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "s3cret")
+	if got != "Bearer s3cret" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer s3cret")
+	}
+}
+
+func TestCheckAllNoTokenNoHeader(t *testing.T) {
+	var got string
+	srv := capturingAgent(t, &got)
+	defer srv.Close()
+
+	agents := []discovery.Agent{{Addr: addr(srv)}}
+	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "")
+	if got != "" {
+		t.Errorf("Authorization = %q, want empty (no header)", got)
+	}
+}
+
+// TestServerForwardsConfiguredAgentToken proves the full wiring: a token passed
+// to New via WithAgentToken reaches the agent on a real /api/check request, not
+// just the CheckAll helper exercised in isolation above.
+func TestServerForwardsConfiguredAgentToken(t *testing.T) {
+	var got string
+	agent := capturingAgent(t, &got)
+	defer agent.Close()
+
+	disc := staticList{{Addr: addr(agent)}}
+	srv := httptest.NewServer(New(disc, time.Second, WithAgentToken("s3cret")).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got != "Bearer s3cret" {
+		t.Errorf("agent saw Authorization = %q, want %q", got, "Bearer s3cret")
 	}
 }
 

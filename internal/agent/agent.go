@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -95,18 +96,45 @@ type Server struct {
 	policy   *Policy
 	resolver ipResolver
 	metrics  metrics
+
+	// token, when non-empty, is the shared bearer secret required on /check and
+	// (unless metricsPublic) /metrics. Empty disables the check entirely, keeping
+	// the agent open — the backward-compatible default.
+	token string
+	// metricsPublic re-opens /metrics for unauthenticated scraping (Prometheus)
+	// even when a token is configured. /check stays gated regardless.
+	metricsPublic bool
+}
+
+// Option configures a Server built by New.
+type Option func(*Server)
+
+// WithToken sets the shared bearer token required on /check (and /metrics unless
+// WithMetricsPublic is set). An empty token leaves the agent open.
+func WithToken(token string) Option {
+	return func(s *Server) { s.token = token }
+}
+
+// WithMetricsPublic leaves /metrics reachable without the bearer token, for
+// Prometheus scrapers that cannot present it. /check stays gated.
+func WithMetricsPublic(public bool) Option {
+	return func(s *Server) { s.metricsPublic = public }
 }
 
 // New builds an agent Server. An empty nodeName is resolved via NodeName; a nil
 // policy means allow-all.
-func New(nodeName string, policy *Policy) *Server {
+func New(nodeName string, policy *Policy, opts ...Option) *Server {
 	if nodeName == "" {
 		nodeName = NodeName()
 	}
 	if policy == nil {
 		policy = &Policy{}
 	}
-	return &Server{nodeName: nodeName, policy: policy, resolver: net.DefaultResolver}
+	s := &Server{nodeName: nodeName, policy: policy, resolver: net.DefaultResolver}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // NodeName returns the agent's point name from NODE_NAME, falling back to the
@@ -121,13 +149,45 @@ func NodeName() string {
 	return "unknown"
 }
 
-// Handler returns the agent's HTTP routes.
+// Handler returns the agent's HTTP routes. /check (and /metrics, unless
+// metricsPublic) require the bearer token when one is configured; /healthz is
+// always open so cluster probes do not need the secret.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/check", s.handleCheck)
+	mux.HandleFunc("/check", s.requireToken(s.handleCheck))
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/metrics", s.handleMetrics)
+	if s.metricsPublic {
+		mux.HandleFunc("/metrics", s.handleMetrics)
+	} else {
+		mux.HandleFunc("/metrics", s.requireToken(s.handleMetrics))
+	}
 	return mux
+}
+
+// requireToken wraps next so it only runs when the request carries the right
+// bearer token. With no token configured it is a pass-through (open agent, the
+// backward-compatible default). The token comparison is constant-time so a
+// wrong token cannot be recovered by timing.
+func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.token != "" && !s.authorized(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// authorized reports whether r presents the configured bearer token. The scheme
+// match is case-insensitive per RFC 6750, matching the UI's bearer parsing.
+func (s *Server) authorized(r *http.Request) bool {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return false
+	}
+	got := strings.TrimSpace(h[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
 type checkResponse struct {

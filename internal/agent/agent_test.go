@@ -352,6 +352,143 @@ func TestMetrics(t *testing.T) {
 	}
 }
 
+// getAuth issues a GET with an Authorization: Bearer header (empty token sends
+// no header) and returns the response and body.
+func getAuth(t *testing.T, base, path, token string) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, base+path, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	buf := make([]byte, 0)
+	var tmp [4096]byte
+	for {
+		n, err := resp.Body.Read(tmp[:])
+		buf = append(buf, tmp[:n]...)
+		if err != nil {
+			break
+		}
+	}
+	return resp, buf
+}
+
+// TestAgentTokenGatesCheck verifies that, when a token is configured, /check
+// rejects missing/wrong tokens with 401 and accepts the right one.
+func TestAgentTokenGatesCheck(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithToken("s3cret")).Handler())
+	defer srv.Close()
+
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+
+	// Missing token → 401.
+	if resp, body := getAuth(t, srv.URL, check, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no token: status = %d, want 401; body=%s", resp.StatusCode, body)
+	}
+	// Wrong token → 401.
+	if resp, body := getAuth(t, srv.URL, check, "wrong"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong token: status = %d, want 401; body=%s", resp.StatusCode, body)
+	}
+	// Right token → 200.
+	resp, body := getAuth(t, srv.URL, check, "s3cret")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("right token: status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestAgentTokenSchemeCaseInsensitive verifies the Authorization scheme match is
+// case-insensitive per RFC 6750 (so "bearer"/"BEARER" are accepted), matching the
+// UI's bearer parsing.
+func TestAgentTokenSchemeCaseInsensitive(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithToken("s3cret")).Handler())
+	defer srv.Close()
+
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+	for _, scheme := range []string{"bearer", "BEARER", "BeArEr"} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+check, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", scheme+" s3cret")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("scheme %q: status = %d, want 200", scheme, resp.StatusCode)
+		}
+	}
+}
+
+// TestAgentTokenGatesMetrics verifies /metrics is gated behind the token by
+// default while /healthz stays open even with a token set.
+func TestAgentTokenGatesMetrics(t *testing.T) {
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithToken("s3cret")).Handler())
+	defer srv.Close()
+
+	if resp, body := getAuth(t, srv.URL, "/metrics", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/metrics no token: status = %d, want 401; body=%s", resp.StatusCode, body)
+	}
+	if resp, _ := getAuth(t, srv.URL, "/metrics", "s3cret"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics with token: status = %d, want 200", resp.StatusCode)
+	}
+	// /healthz is always open so cluster probes don't need the secret.
+	if resp, _ := getAuth(t, srv.URL, "/healthz", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/healthz no token: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestAgentMetricsPublic verifies --metrics-public opens /metrics only; /check
+// stays gated behind the token.
+func TestAgentMetricsPublic(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := httptest.NewServer(New("testnode", &Policy{}, WithToken("s3cret"), WithMetricsPublic(true)).Handler())
+	defer srv.Close()
+
+	// /metrics open without a token.
+	if resp, _ := getAuth(t, srv.URL, "/metrics", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics public: status = %d, want 200", resp.StatusCode)
+	}
+	// /check still requires the token.
+	check := fmt.Sprintf("/check?host=127.0.0.1&port=%d", port)
+	if resp, _ := getAuth(t, srv.URL, check, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/check still gated: status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestAgentNoTokenOpen verifies that, with no token configured, /check and
+// /metrics stay open (backward compatible).
+func TestAgentNoTokenOpen(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := httptest.NewServer(New("testnode", &Policy{}).Handler())
+	defer srv.Close()
+
+	if resp, _ := getAuth(t, srv.URL, fmt.Sprintf("/check?host=127.0.0.1&port=%d", port), ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/check open: status = %d, want 200", resp.StatusCode)
+	}
+	if resp, _ := getAuth(t, srv.URL, "/metrics", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics open: status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestPolicyAllowed(t *testing.T) {
 	p, err := ParsePolicy("10.0.0.0/8", "10.1.0.0/16")
 	if err != nil {

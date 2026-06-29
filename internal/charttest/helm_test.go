@@ -312,6 +312,228 @@ func TestChartAuthOff(t *testing.T) {
 	}
 }
 
+const authAPIOnlyValues = `
+ui:
+  auth:
+    api:
+      enabled: true
+      entries:
+        - id: ci
+          issuer: https://keycloak.corp/realms/main
+          audience: portreach
+          type: gitlab
+          usernameClaim: preferred_username
+          groupsClaim: groups
+          allowedGroups: [ci]
+          groupMatch: subtree
+        - id: entra
+          issuer: https://login.microsoftonline.com/abc123/v2.0
+          audience: api://portreach
+`
+
+// TestChartAuthAPIOnly: the bearer-only path renders auth config + mount with no
+// browser providers (the API-only deployment must not require providers/cookie).
+func TestChartAuthAPIOnly(t *testing.T) {
+	requireHelm(t)
+	vals := writeValues(t, authAPIOnlyValues)
+
+	dep := helmTemplate(t, "-f", vals, "--show-only", "templates/deployment-ui.yaml")
+	for _, want := range []string{"--auth-config", "/etc/portreach/auth/auth.yaml", "mountPath: /etc/portreach/auth", "configMap:"} {
+		if !strings.Contains(dep, want) {
+			t.Errorf("api-only deployment missing %q\n---\n%s", want, dep)
+		}
+	}
+	// No browser providers → no cookie key / provider secret env wiring.
+	for _, unwanted := range []string{"PORTREACH_AUTH_COOKIE_KEY", "CLIENT_SECRET"} {
+		if strings.Contains(dep, unwanted) {
+			t.Errorf("api-only deployment unexpectedly contains %q\n---\n%s", unwanted, dep)
+		}
+	}
+
+	cm := helmTemplate(t, "-f", vals, "--show-only", "templates/configmap-ui-auth.yaml")
+	for _, want := range []string{
+		"api:",
+		"id: ci",
+		"issuer: https://keycloak.corp/realms/main",
+		"audience: portreach",
+		"type: gitlab",
+		"groupMatch: subtree",
+		"id: entra",
+		"audience: api://portreach",
+	} {
+		if !strings.Contains(cm, want) {
+			t.Errorf("api-only configmap missing %q\n---\n%s", want, cm)
+		}
+	}
+	// API-only must not iterate browser providers or set a cookie key.
+	for _, unwanted := range []string{"providers:", "cookieKey:"} {
+		if strings.Contains(cm, unwanted) {
+			t.Errorf("api-only configmap unexpectedly contains %q\n---\n%s", unwanted, cm)
+		}
+	}
+
+	// The chart-rendered API-only config must load + validate in the binary.
+	var doc struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal([]byte(cm), &doc); err != nil {
+		t.Fatalf("parse configmap: %v", err)
+	}
+	f := filepath.Join(t.TempDir(), "auth.yaml")
+	if err := os.WriteFile(f, []byte(doc.Data["auth.yaml"]), 0o600); err != nil {
+		t.Fatalf("write auth.yaml: %v", err)
+	}
+	cfg, err := auth.LoadConfig(f)
+	if err != nil {
+		t.Fatalf("LoadConfig on api-only config: %v\n%s", err, doc.Data["auth.yaml"])
+	}
+	if !cfg.Enabled() {
+		t.Fatal("api-only config should be enabled")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("api-only config failed Validate: %v", err)
+	}
+	if len(cfg.Providers) != 0 {
+		t.Fatalf("api-only config should have no browser providers, got %d", len(cfg.Providers))
+	}
+	if len(cfg.API) != 2 {
+		t.Fatalf("want 2 API entries, got %d", len(cfg.API))
+	}
+
+	// API-only mode renders no auth Secret (no cookie key / client secrets).
+	all := helmTemplate(t, "-f", vals)
+	if strings.Contains(all, "kind: Secret") && strings.Contains(all, "-ui-auth") {
+		t.Errorf("api-only render unexpectedly includes the auth Secret\n%s", all)
+	}
+}
+
+// TestChartAuthAPIEnabledNoEntries: enabling the API path with no entries would
+// render `api: []`, which the UI reads as api-disabled and leaves the endpoint
+// open. The chart must fail closed instead, mirroring the browser-providers guard.
+func TestChartAuthAPIEnabledNoEntries(t *testing.T) {
+	requireHelm(t)
+	out, err := helmTemplateErr(t, "--set", "ui.auth.api.enabled=true")
+	if err == nil {
+		t.Fatalf("api enabled with no entries should fail to render, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ui.auth.api.entries is empty") {
+		t.Errorf("expected an empty-entries failure message, got:\n%s", out)
+	}
+}
+
+// TestChartAuthLegacyToggle: a bare `ui.auth.enabled: true` keeps rendering the
+// browser path (back-compat) via the portreach.auth.browser.enabled helper.
+func TestChartAuthLegacyToggle(t *testing.T) {
+	requireHelm(t)
+	vals := writeValues(t, authInlineValues) // uses ui.auth.enabled: true
+
+	cm := helmTemplate(t, "-f", vals, "--show-only", "templates/configmap-ui-auth.yaml")
+	for _, want := range []string{"providers:", "id: github", "cookieKey: ${PORTREACH_AUTH_COOKIE_KEY}"} {
+		if !strings.Contains(cm, want) {
+			t.Errorf("legacy-toggle configmap missing %q\n---\n%s", want, cm)
+		}
+	}
+	dep := helmTemplate(t, "-f", vals, "--show-only", "templates/deployment-ui.yaml")
+	if !strings.Contains(dep, "--auth-config") {
+		t.Errorf("legacy-toggle deployment missing --auth-config\n---\n%s", dep)
+	}
+}
+
+// TestChartAgentToken: a literal token renders the shared Secret, injects
+// PORTREACH_AGENT_TOKEN into both workloads via tokenSecretKey, and stamps a
+// checksum annotation so a rotation rolls the pods. An existingSecret is
+// referenced verbatim with no checksum (manual rollout).
+func TestChartAgentToken(t *testing.T) {
+	requireHelm(t)
+	const tokenKey = "agent-token"
+
+	secret := helmTemplate(t, "-f", writeValues(t, "agent:\n  auth:\n    token: s3cr3t-token\n"), "--show-only", "templates/secret-agent-token.yaml")
+	for _, want := range []string{"kind: Secret", "name: rel-portreach-agent-token", tokenKey + ": \"s3cr3t-token\""} {
+		if !strings.Contains(secret, want) {
+			t.Errorf("agent-token Secret missing %q\n---\n%s", want, secret)
+		}
+	}
+
+	for _, show := range []string{"templates/deployment-ui.yaml", "templates/daemonset-agent.yaml"} {
+		out := helmTemplate(t, "--set", "agent.auth.token=s3cr3t-token", "--show-only", show)
+		for _, want := range []string{
+			"name: PORTREACH_AGENT_TOKEN",
+			"name: rel-portreach-agent-token",
+			"key: " + tokenKey,
+			"checksum/agent-token:",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s missing %q\n---\n%s", show, want, out)
+			}
+		}
+	}
+
+	// Custom tokenSecretKey threads through to the secretKeyRef and Secret.
+	custom := helmTemplate(t, "--set", "agent.auth.token=s3cr3t-token", "--set", "agent.auth.tokenSecretKey=tok", "--show-only", "templates/daemonset-agent.yaml")
+	if !strings.Contains(custom, "key: tok") {
+		t.Errorf("custom tokenSecretKey not threaded\n---\n%s", custom)
+	}
+
+	// existingSecret: referenced verbatim, no chart Secret, no checksum.
+	ext := helmTemplate(t, "--set", "agent.auth.existingSecret=ext-tok", "--show-only", "templates/daemonset-agent.yaml")
+	if !strings.Contains(ext, "name: ext-tok") {
+		t.Errorf("existingSecret not referenced\n---\n%s", ext)
+	}
+	if strings.Contains(ext, "checksum/agent-token") {
+		t.Errorf("externally-managed Secret should not get a checksum annotation\n---\n%s", ext)
+	}
+	if _, err := helmTemplateErr(t, "--set", "agent.auth.existingSecret=ext-tok", "--show-only", "templates/secret-agent-token.yaml"); err == nil {
+		t.Error("existingSecret should not render a chart-managed token Secret")
+	}
+
+	// metricsPublic toggles the agent flag.
+	mp := helmTemplate(t, "--set", "agent.metricsPublic=true", "--show-only", "templates/daemonset-agent.yaml")
+	if !strings.Contains(mp, "--metrics-public") {
+		t.Errorf("metricsPublic should add --metrics-public\n---\n%s", mp)
+	}
+	def := helmTemplate(t, "--show-only", "templates/daemonset-agent.yaml")
+	if strings.Contains(def, "--metrics-public") || strings.Contains(def, "PORTREACH_AGENT_TOKEN") {
+		t.Errorf("token/metrics default-off agent unexpectedly wired\n---\n%s", def)
+	}
+}
+
+// TestChartAgentTokenOff: no token configured → no env, no checksum, no Secret.
+func TestChartAgentTokenOff(t *testing.T) {
+	requireHelm(t)
+	dep := helmTemplate(t, "--show-only", "templates/deployment-ui.yaml")
+	for _, unwanted := range []string{"PORTREACH_AGENT_TOKEN", "checksum/agent-token"} {
+		if strings.Contains(dep, unwanted) {
+			t.Errorf("token-off deployment unexpectedly contains %q\n---\n%s", unwanted, dep)
+		}
+	}
+	all := helmTemplate(t)
+	if strings.Contains(all, "kind: Secret") && strings.Contains(all, "-agent-token") {
+		t.Errorf("token-off render unexpectedly includes the agent-token Secret\n%s", all)
+	}
+}
+
+// TestChartNetworkPolicy: opt-in NP renders ingress/egress selectors binding the
+// UI and agent pods (best-effort second layer; off by default).
+func TestChartNetworkPolicy(t *testing.T) {
+	requireHelm(t)
+	out := helmTemplate(t, "--set", "networkPolicy.enabled=true", "--show-only", "templates/networkpolicy.yaml")
+	for _, want := range []string{
+		"kind: NetworkPolicy",
+		"name: rel-portreach-ui",
+		"name: rel-portreach-agent",
+		"app.kubernetes.io/component: ui",
+		"app.kubernetes.io/component: agent",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("networkpolicy missing %q\n---\n%s", want, out)
+		}
+	}
+	// Off by default.
+	if _, err := helmTemplateErr(t, "--show-only", "templates/networkpolicy.yaml"); err == nil {
+		t.Error("networkPolicy should be off by default")
+	}
+}
+
 func chartAppVersion(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(chartDir, "Chart.yaml"))
@@ -505,10 +727,13 @@ func TestChartLint(t *testing.T) {
 	requireHelm(t)
 	external := writeValues(t, authExternalValues)
 	inline := writeValues(t, authInlineValues)
+	apiOnly := writeValues(t, authAPIOnlyValues)
 	for _, args := range [][]string{
 		{"lint", chartDir},
 		{"lint", chartDir, "-f", external},
 		{"lint", chartDir, "-f", inline},
+		{"lint", chartDir, "-f", apiOnly},
+		{"lint", chartDir, "--set", "agent.auth.token=s3cr3t-token", "--set", "agent.metricsPublic=true"},
 	} {
 		out, err := exec.Command("helm", args...).CombinedOutput()
 		if err != nil {

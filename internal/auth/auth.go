@@ -74,12 +74,25 @@ type oauthState struct {
 // Authenticator owns the configured providers and the auth HTTP handlers. It is
 // built once at startup from a validated Config.
 type Authenticator struct {
-	cfg       *Config
-	providers map[string]Provider
-	pcs       map[string]ProviderConfig // provider id -> config (allowlists)
-	order     []string                  // provider ids in config order
-	logger    *slog.Logger              // audit logger; nil falls back to slog.Default()
-	branding  LoginBranding
+	cfg        *Config
+	providers  map[string]Provider
+	pcs        map[string]ProviderConfig // provider id -> config (allowlists)
+	order      []string                  // provider ids in config order
+	apiEntries []*apiEntry               // bearer-token issuers, in config order
+	allowlists map[string]allowlist      // id -> resolved allowlist (browser + API)
+	logger     *slog.Logger              // audit logger; nil falls back to slog.Default()
+	branding   LoginBranding
+}
+
+// allowlist is the per-id access rule resolved once at startup from a browser
+// provider or an API entry. It is the combined registry the RBAC lookup keys by
+// Session.Provider so a bearer identity and a cookie session enforce the same
+// way. An id present in neither source is absent here, which fails closed (the
+// lookup denies an unknown id rather than default-allowing).
+type allowlist struct {
+	groups     []string // org + group lists merged
+	users      []string // per-source allowed users (API entries); global AllowedUsers also applies
+	groupMatch string   // exact (default) or subtree
 }
 
 // New builds an Authenticator from cfg, constructing one Provider per configured
@@ -91,9 +104,10 @@ func New(cfg *Config, opts ...Option) (*Authenticator, error) {
 		return nil, err
 	}
 	a := &Authenticator{
-		cfg:       cfg,
-		providers: make(map[string]Provider, len(cfg.Providers)),
-		pcs:       make(map[string]ProviderConfig, len(cfg.Providers)),
+		cfg:        cfg,
+		providers:  make(map[string]Provider, len(cfg.Providers)),
+		pcs:        make(map[string]ProviderConfig, len(cfg.Providers)),
+		allowlists: make(map[string]allowlist, len(cfg.Providers)+len(cfg.API)),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -122,6 +136,31 @@ func New(cfg *Config, opts ...Option) (*Authenticator, error) {
 		a.providers[pc.ID] = p
 		a.pcs[pc.ID] = pc
 		a.order = append(a.order, pc.ID)
+		// A browser provider's allowlist is its merged org+group lists; user
+		// allowlisting for browser sessions is the global AllowedUsers only.
+		groups := make([]string, 0, len(pc.AllowedOrgs)+len(pc.AllowedGroups))
+		groups = append(groups, pc.AllowedOrgs...)
+		groups = append(groups, pc.AllowedGroups...)
+		a.allowlists[pc.ID] = allowlist{groups: groups, groupMatch: pc.GroupMatch}
+	}
+	// Build one JWT verifier per API bearer entry. Like GitLab/OIDC providers
+	// above, this runs OIDC discovery against each issuer, so New may make network
+	// calls; the same startup discovery timeout bounds each.
+	for _, e := range cfg.API {
+		dctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
+		ae, err := newAPIEntry(dctx, e)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("auth: api entry %q: %w", e.ID, err)
+		}
+		a.apiEntries = append(a.apiEntries, ae)
+		// An API entry carries both a per-entry group list and a per-entry user
+		// list; the global AllowedUsers also applies (see allowed).
+		a.allowlists[e.ID] = allowlist{
+			groups:     e.AllowedGroups,
+			users:      e.AllowedUsers,
+			groupMatch: e.GroupMatch,
+		}
 	}
 	return a, nil
 }
@@ -389,17 +428,24 @@ func (a *Authenticator) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// allowed reports whether identity id may access the service via provider
-// providerID. Access passes when no allowlist is configured (neither the global
-// AllowedUsers nor that provider's org/group list), OR the user is in
-// AllowedUsers, OR any of the user's groups is in the provider's allowlist.
+// allowed reports whether identity id may access the service via the source
+// (browser provider or API entry) keyed by providerID. The lookup is uniform
+// across cookie sessions and bearer identities: both resolve their allowlist
+// from the same combined registry built at startup.
+//
+// It fails closed: an id present in neither source (e.g. a forged
+// Session.Provider, or a token bound to no configured entry) is denied, never
+// default-allowed. For a known id, access passes when no allowlist is configured
+// (no global AllowedUsers, no per-source users, no groups), OR the user is in
+// the global AllowedUsers or the per-source users, OR any of the user's groups
+// matches the source's group list.
 func (a *Authenticator) allowed(providerID string, id Identity) bool {
-	pc := a.pcs[providerID]
-	allowedGroups := make([]string, 0, len(pc.AllowedOrgs)+len(pc.AllowedGroups))
-	allowedGroups = append(allowedGroups, pc.AllowedOrgs...)
-	allowedGroups = append(allowedGroups, pc.AllowedGroups...)
+	al, ok := a.allowlists[providerID]
+	if !ok {
+		return false // fail closed: unknown id never default-allows
+	}
 
-	if len(a.cfg.AllowedUsers) == 0 && len(allowedGroups) == 0 {
+	if len(a.cfg.AllowedUsers) == 0 && len(al.users) == 0 && len(al.groups) == 0 {
 		return true
 	}
 	for _, u := range a.cfg.AllowedUsers {
@@ -407,9 +453,14 @@ func (a *Authenticator) allowed(providerID string, id Identity) bool {
 			return true
 		}
 	}
-	for _, want := range allowedGroups {
+	for _, u := range al.users {
+		if u == id.Login {
+			return true
+		}
+	}
+	for _, want := range al.groups {
 		for _, have := range id.Groups {
-			if groupAllowed(pc.GroupMatch, want, have) {
+			if groupAllowed(al.groupMatch, want, have) {
 				return true
 			}
 		}

@@ -23,6 +23,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- $podAnnotations := merge (.Values.agent.podAnnotations | default dict) (.Values.commonAnnotations | default dict) }}
+      {{- with include "portreach.agent.token.checksum" . }}
+      {{- $_ := set $podAnnotations "checksum/agent-token" . }}
+      {{- end }}
       {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
@@ -63,6 +66,9 @@ spec:
             - --deny
             - {{ . | quote }}
             {{- end }}
+            {{- if .Values.agent.metricsPublic }}
+            - --metrics-public
+            {{- end }}
             {{- with .Values.agent.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -78,6 +84,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- if eq (include "portreach.agent.token.enabled" .) "true" }}
+            - name: PORTREACH_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "portreach.agent.token.secretName" . }}
+                  key: {{ .Values.agent.auth.tokenSecretKey }}
+            {{- end }}
             {{- with .Values.agent.extraEnv }}
             {{- tpl (toYaml .) $ | nindent 12 }}
             {{- end }}

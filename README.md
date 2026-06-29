@@ -120,6 +120,8 @@ Both also expose `GET /healthz`; the agent exposes `GET /metrics`
 | `--listen` | `:8732` | listen address |
 | `--allow` | *(empty)* | comma-separated allow CIDR list (empty = allow all) |
 | `--deny` | *(empty)* | comma-separated deny CIDR list (wins over allow) |
+| `--auth-token` | *(empty)* | bearer token required on `/check` + `/metrics` (env `PORTREACH_AGENT_TOKEN`) |
+| `--metrics-public` | `false` | keep `/metrics` open when a token is set (`/check` stays gated) |
 
 `NODE_NAME` (env) sets the point name reported by the agent; it falls back to
 the hostname.
@@ -133,6 +135,7 @@ the hostname.
 | `--agents-dns` | `PORTREACH_AGENTS_DNS` | | headless service name to resolve agents from |
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | port for DNS-discovered / port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
+| `--agent-token` | `PORTREACH_AGENT_TOKEN` | | bearer token sent to agents on `/check`; empty = none |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | SSO auth config YAML; empty = auth disabled |
 | `--ui-title` / `--ui-description` / `--ui-footer` | `PORTREACH_UI_*` | | trusted HTML branding for the main page |
 | `--login-title` / `--login-header` / `--login-footer` | `PORTREACH_LOGIN_*` | | trusted HTML branding for login/denied pages |
@@ -168,6 +171,23 @@ Every login and reachability check is emitted as a structured `log/slog` JSON
 audit event on stdout (`who` ran `what` from `where`) for security pipelines;
 with auth off the actor is `anonymous`. Full reference, OAuth-app setup and the
 audit event format: [`docs/configuration.md`](docs/configuration.md#authentication-optional-sso).
+
+### API access (tokens)
+
+For dev/CI automation, the UI's `/api/*` also accepts an
+`Authorization: Bearer <JWT>` — an OIDC **access token** from a configured IdP,
+validated offline by JWKS (`iss` + `aud` + `exp` + signature). Token and browser
+requests share one identity, so the same group allowlist and audit apply. CI
+uses an IdP **service account** (client-credentials); no browser needed.
+OIDC/JWT only — GitHub and opaque tokens are unsupported. Independent of browser
+SSO and off until you add an `api:` entry.
+
+The **agent** plane is internal and locked down by a shared bearer token
+(`--auth-token` / `PORTREACH_AGENT_TOKEN`); the UI sends it on every probe
+(`--agent-token`). It is the primary isolation boundary (NetworkPolicy is
+best-effort under `hostNetwork`), and it also gates `/metrics`. See
+[`docs/configuration.md`](docs/configuration.md#api-bearer-tokens-boundary-a)
+and [`docs/deployment.md`](docs/deployment.md#agent-token-shared-secret).
 
 ## Localization
 
