@@ -124,6 +124,8 @@ Both also expose `GET /healthz`; the agent exposes `GET /metrics`
 | `--deny` | *(empty)* | comma-separated deny CIDR list (wins over allow) |
 | `--auth-token` | *(empty)* | bearer token required on `/check` + `/metrics` (env `PORTREACH_AGENT_TOKEN`) |
 | `--metrics-public` | `false` | keep `/metrics` open when a token is set (`/check` stays gated) |
+| `--allow-metadata` | `false` | remove the default-on metadata/link-local connect guard (`--deny` still wins) |
+| `--rate-limit` | `false` | optional `/check` rate limiter (`--rate-target-*` / `--rate-global-*`); off = unlimited |
 
 `NODE_NAME` (env) sets the point name reported by the agent; it falls back to
 the hostname.
@@ -140,6 +142,8 @@ the hostname.
 | `--agent-token` | `PORTREACH_AGENT_TOKEN` | | bearer token sent to agents on `/check`; empty = none |
 | `--max-agents-per-check` | `PORTREACH_MAX_AGENTS_PER_CHECK` | `0` | cap agents queried per check; `0` = unlimited (every node) |
 | `--max-concurrent-fanout` | `PORTREACH_MAX_CONCURRENT_FANOUT` | `0` | bound concurrent per-check agent requests; `0` = unlimited |
+| `--rate-limit` | `PORTREACH_RATE_LIMIT` | `false` | API rate limiter (`--rate-user-*` / `--rate-target-*` / `--rate-global-*`); off = unlimited |
+| `--trusted-proxies` | `PORTREACH_TRUSTED_PROXIES` | | proxy CIDRs/IPs trusted for forwarded-header client-IP keying |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | SSO auth config YAML; empty = auth disabled |
 | `--ui-title` / `--ui-description` / `--ui-footer` | `PORTREACH_UI_*` | | trusted HTML branding for the main page |
 | `--login-title` / `--login-header` / `--login-footer` | `PORTREACH_LOGIN_*` | | trusted HTML branding for login/denied pages |
@@ -154,6 +158,15 @@ The agent makes outbound TCP connections on request — an SSRF vector. Mitigate
 
 - expose the UI only on an internal network or behind authentication;
 - optionally restrict agent targets with `--allow` / `--deny` CIDR lists;
+- **cloud metadata is denied by default** — the agent refuses connects to the
+  link-local range (`169.254.0.0/16`, incl. IMDS `169.254.169.254`) and IPv6
+  `fd00:ec2::254` at connect time; opt back in with `--allow-metadata` (operator
+  `--deny` still wins);
+- **bound the abuse surface** with the optional rate limiter (`--rate-limit`,
+  per-user/per-target/global → `429` + `Retry-After`) and `--max-agents-per-check`
+  to cap the per-check fan-out; behind an Ingress set `--trusted-proxies` so
+  per-IP keying is correct (or enable auth for per-user keys). Both are off
+  (unlimited) by default.
 
 A denied target resolves to HTTP 403. See
 [`docs/configuration.md`](docs/configuration.md) for details.

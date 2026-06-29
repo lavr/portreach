@@ -269,14 +269,14 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 - [x] run tests — must pass before Task 6
 
 ### Task 6: Documentation
-- [ ] `docs/configuration.md`: rate-limit knobs (per-user/per-target/global,
+- [x] `docs/configuration.md`: rate-limit knobs (per-user/per-target/global,
       reservation/429/`Retry-After`), `maxAgentsPerCheck` + fan-out bounding,
       trusted-proxy config (and that per-IP keying needs it / prefer auth), and the
       metadata default-deny + override semantics (operator `--deny` always wins)
-- [ ] `docs/deployment.md`: recommend enabling the limiter + trusted-proxies behind an
+- [x] `docs/deployment.md`: recommend enabling the limiter + trusted-proxies behind an
       Ingress; security note on metadata
-- [ ] `README.md`: brief mention under security
-- [ ] run `go test ./...` — no regression
+- [x] `README.md`: brief mention under security
+- [x] run `go test ./...` — no regression
 
 ### Task 7: Verify acceptance criteria
 - [ ] limiter enforces per-user/per-target/global with reservation rollback and correct

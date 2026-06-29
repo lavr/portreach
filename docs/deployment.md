@@ -45,6 +45,14 @@ ui:
     mode: relative   # relative | fqdn | bare (see "Agent discovery" below)
   ingress:
     enabled: false   # enable + set hosts to expose externally
+  rateLimit:
+    enabled: false   # API rate limiter; off => unlimited (see "Abuse controls")
+    user:   {rate: 0, burst: 0}   # per identity (user/IP)
+    target: {rate: 0, burst: 0}   # per host:port
+    global: {rate: 0, burst: 0}   # process-wide
+    maxAgentsPerCheck: 0          # 0 = every node; >0 caps + reports drops
+    maxConcurrentFanout: 0        # 0 = unlimited; >0 bounds concurrency
+  trustedProxies: []              # Ingress/CNI egress CIDRs (per-IP keying)
   branding:
     title: '<span style="color:#b62324">PROD — ${CLUSTER_NAME}</span>'
     description: null
@@ -66,6 +74,7 @@ agent:
   targetPolicy:
     allow: ""        # SSRF policy CIDRs (see configuration.md)
     deny: ""
+    allowMetadata: false   # false => link-local/IMDS denied (default-on guard)
   network:
     hostNetwork: true
     hostPort:
@@ -260,3 +269,26 @@ The UI lets anyone trigger outgoing TCP connections from every point — an SSRF
 surface. Expose it only on an internal network or behind authentication, and
 restrict targets with the agent `--allow` / `--deny` CIDR lists where
 appropriate. See [`configuration.md`](configuration.md#target-policy-ssrf-mitigation).
+
+### Abuse controls (rate limit, fan-out, metadata)
+
+For multi-tenant deployments (many developers, turnover) also enable the
+[abuse controls](configuration.md#rate-limiter-abuse-controls):
+
+- **Enable the rate limiter** (`ui.rateLimit.enabled: true`) behind an Ingress so
+  the UI can't be turned into a port-scanner or DoS amplifier. Over limit →
+  `429` + `Retry-After`. It is off (unlimited) by default.
+- **Set `ui.trustedProxies`** to your Ingress/CNI egress CIDRs whenever you rely
+  on per-IP keying — otherwise every request shares the proxy's IP. For real
+  per-user limits, enable auth so the limiter keys on the authenticated identity.
+- **Bound the blast radius** with `ui.rateLimit.maxAgentsPerCheck` if a single
+  check should not fan out to every node; dropped agents are reported, never
+  silently truncated.
+- **Cloud metadata is denied by default.** The agent refuses connects to the
+  link-local range (`169.254.0.0/16`, incl. IMDS `169.254.169.254` / ECS
+  `169.254.170.2`) and IPv6 `fd00:ec2::254`, enforced at connect time so normal
+  targets are unaffected. This is an intentional default-on change: a deployment
+  that legitimately probed a link-local address must opt back in with
+  `agent.targetPolicy.allowMetadata: true`. An operator `--deny` is independent
+  and always wins. **Confirm on a real cloud node** that `169.254.169.254` is
+  unreachable through the agent.
