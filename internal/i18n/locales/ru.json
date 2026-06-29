@@ -21,6 +21,7 @@
   "error.host_required": "требуется хост",
   "error.bad_port": "неверный порт",
   "error.bad_timeout": "неверный таймаут",
+  "error.rate_limited": "превышен лимит запросов — повторите через %s с",
 
   "auth.login.title": "Вход",
   "auth.login.heading": "Вход в portreach",

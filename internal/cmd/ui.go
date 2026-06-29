@@ -13,6 +13,7 @@ import (
 
 	"github.com/lavr/portreach/internal/auth"
 	"github.com/lavr/portreach/internal/discovery"
+	"github.com/lavr/portreach/internal/ratelimit"
 	"github.com/lavr/portreach/internal/ui"
 )
 
@@ -32,6 +33,15 @@ func runUI(args []string, deps Deps) error {
 	loginTitle := fs.String("login-title", os.Getenv("PORTREACH_LOGIN_TITLE"), "HTML login/denied browser title; empty when explicitly set keeps localized tab title (env PORTREACH_LOGIN_TITLE)")
 	loginHeader := fs.String("login-header", os.Getenv("PORTREACH_LOGIN_HEADER"), "HTML login/denied heading; empty when explicitly set suppresses it (env PORTREACH_LOGIN_HEADER)")
 	loginFooter := fs.String("login-footer", os.Getenv("PORTREACH_LOGIN_FOOTER"), "HTML footer block rendered on the login page (env PORTREACH_LOGIN_FOOTER)")
+	rateLimit := fs.Bool("rate-limit", envBool("PORTREACH_RATE_LIMIT", false), "enable the API rate limiter; off = unlimited (env PORTREACH_RATE_LIMIT)")
+	rateUserRate := fs.Float64("rate-user-rate", envFloat("PORTREACH_RATE_USER_RATE", 0), "per-identity tokens/sec; 0 disables this scope (env PORTREACH_RATE_USER_RATE)")
+	rateUserBurst := fs.Int("rate-user-burst", envInt("PORTREACH_RATE_USER_BURST", 0), "per-identity bucket capacity (env PORTREACH_RATE_USER_BURST)")
+	rateTargetRate := fs.Float64("rate-target-rate", envFloat("PORTREACH_RATE_TARGET_RATE", 0), "per-target (host:port) tokens/sec; 0 disables (env PORTREACH_RATE_TARGET_RATE)")
+	rateTargetBurst := fs.Int("rate-target-burst", envInt("PORTREACH_RATE_TARGET_BURST", 0), "per-target bucket capacity (env PORTREACH_RATE_TARGET_BURST)")
+	rateGlobalRate := fs.Float64("rate-global-rate", envFloat("PORTREACH_RATE_GLOBAL_RATE", 0), "process-wide tokens/sec; 0 disables (env PORTREACH_RATE_GLOBAL_RATE)")
+	rateGlobalBurst := fs.Int("rate-global-burst", envInt("PORTREACH_RATE_GLOBAL_BURST", 0), "process-wide bucket capacity (env PORTREACH_RATE_GLOBAL_BURST)")
+	trustedProxies := fs.String("trusted-proxies", os.Getenv("PORTREACH_TRUSTED_PROXIES"), "comma-separated CIDRs/IPs whose forwarded header is trusted for client-IP keying (env PORTREACH_TRUSTED_PROXIES)")
+	forwardedHeader := fs.String("forwarded-header", os.Getenv("PORTREACH_FORWARDED_HEADER"), "forwarded client-IP header trusted only from trusted-proxies; empty = X-Forwarded-For (env PORTREACH_FORWARDED_HEADER)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // -h/--help: flag already printed usage, exit cleanly
@@ -55,7 +65,24 @@ func runUI(args []string, deps Deps) error {
 		Footer: expandEnv(resolveString(fs, "login-footer", loginFooter, "PORTREACH_LOGIN_FOOTER")),
 	}
 
-	handler, err := buildUIHandler(disc, *timeout, *authConfig, *agentToken, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
+	// Build the optional rate limiter. Unset (--rate-limit off) leaves it nil =
+	// unlimited, today's behaviour; when enabled, an invalid config fails fast.
+	var limiter *ratelimit.Limiter
+	if *rateLimit {
+		limiter, err = ratelimit.New(ratelimit.Config{
+			Enabled:         true,
+			User:            ratelimit.Scope{Rate: *rateUserRate, Burst: *rateUserBurst},
+			Target:          ratelimit.Scope{Rate: *rateTargetRate, Burst: *rateTargetBurst},
+			Global:          ratelimit.Scope{Rate: *rateGlobalRate, Burst: *rateGlobalBurst},
+			TrustedProxies:  splitList(*trustedProxies),
+			ForwardedHeader: *forwardedHeader,
+		})
+		if err != nil {
+			return &ExitError{Code: 2, Err: err}
+		}
+	}
+
+	handler, err := buildUIHandler(disc, *timeout, *authConfig, *agentToken, limiter, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
 	if err != nil {
 		return &ExitError{Code: 2, Err: err}
 	}
@@ -78,14 +105,19 @@ type handlerBranding struct {
 	login auth.LoginBranding
 }
 
-func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath, agentToken string, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
+func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath, agentToken string, limiter *ratelimit.Limiter, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
 	var branding handlerBranding
 	if len(brandings) > 0 {
 		branding = brandings[0]
 	}
 	// Audit events go to stdout as JSON for the ИБ log pipeline (ELK/Loki).
 	logger := slog.New(slog.NewJSONHandler(out, nil))
-	handler := ui.New(disc, timeout, ui.WithBranding(branding.ui), ui.WithAgentToken(agentToken)).Handler()
+	handler := ui.New(disc, timeout,
+		ui.WithBranding(branding.ui),
+		ui.WithAgentToken(agentToken),
+		ui.WithLimiter(limiter),
+		ui.WithLogger(logger),
+	).Handler()
 	// Audit every reachability check, attributing it to the authenticated user
 	// (or anonymous when auth is off, since no identity reaches the context).
 	audited := auth.AuditCheck(logger, handler)
@@ -146,4 +178,30 @@ func envBool(name string, def bool) bool {
 		}
 	}
 	return def
+}
+
+// envFloat returns the float value of env var name, or def when unset/invalid.
+func envFloat(name string, def float64) float64 {
+	if v := os.Getenv(name); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
+// splitList splits a comma-separated flag value into trimmed, non-empty entries.
+// An empty/whitespace input yields nil so an unset flag leaves the list empty.
+func splitList(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

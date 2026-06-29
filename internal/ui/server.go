@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/lavr/portreach/internal/discovery"
 	"github.com/lavr/portreach/internal/probe"
+	"github.com/lavr/portreach/internal/ratelimit"
 )
 
 // Server serves the UI aggregator HTTP endpoints.
@@ -16,6 +18,8 @@ type Server struct {
 	timeout    time.Duration
 	branding   Branding
 	agentToken string
+	limiter    *ratelimit.Limiter // nil = unlimited (default)
+	logger     *slog.Logger       // throttle audit events; nil = slog.Default()
 }
 
 // New builds a UI Server. timeout bounds the whole fan-out budget; a
@@ -120,6 +124,16 @@ func (s *Server) handleAPICheck(w http.ResponseWriter, r *http.Request) {
 	target, err := parseTarget(r.URL.Query())
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	// Gate before any discovery/fan-out work so a throttled request is cheap.
+	if retry, ok := s.allow(r, target); !ok {
+		ra := retryAfterSeconds(retry)
+		w.Header().Set("Retry-After", ra)
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error":       "rate limit exceeded",
+			"retry_after": ra,
+		})
 		return
 	}
 	ctx, cancel := contextWithTimeout(r, s.timeout)

@@ -151,14 +151,14 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 - [x] run tests — must pass before Task 2
 
 ### Task 2: Wire limiter + proxy-aware client IP into the UI API
-- [ ] `internal/cmd/ui.go`: build limiter + trusted-proxy config from flags/env
+- [x] `internal/cmd/ui.go`: build limiter + trusted-proxy config from flags/env
       (`--rate-*`, `--trusted-proxies`); unset limiter = no-op (unlimited)
-- [ ] wrap `/` (on submit) and `/api/check`: over limit → `429` + `Retry-After`
+- [x] wrap `/` (on submit) and `/api/check`: over limit → `429` + `Retry-After`
       (JSON for `/api/check`, page message for `/`)
-- [ ] emit an audit event on throttle (user/IP, target, reason)
-- [ ] write tests (`httptest`): 429 + `Retry-After` over limit; under limit passes;
+- [x] emit an audit event on throttle (user/IP, target, reason)
+- [x] write tests (`httptest`): 429 + `Retry-After` over limit; under limit passes;
       disabled = unlimited; client-IP keying uses the right source behind/without proxy
-- [ ] run tests — must pass before Task 3
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Bound the per-check fan-out
 - [ ] add `maxAgentsPerCheck` (config, **default `0` = unlimited**, #R4) and a worker
