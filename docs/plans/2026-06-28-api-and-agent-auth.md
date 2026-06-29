@@ -204,39 +204,40 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 - [x] run tests — must pass before Task 5
 
 ### Task 5: Helm wiring (Secret + rotation + optional strict isolation)
-- [ ] **chart auth model + toggle migration (#R2 + High #2 + Medium toggle)**: add a
+- [x] **chart auth model + toggle migration (#R2 + High #2 + Medium toggle)**: add a
       named template **`portreach.auth.enabled`** = `ui.auth.browser.enabled` OR
       `ui.auth.api.enabled`, **honouring the legacy `ui.auth.enabled`** value (treat a
       bare `ui.auth.enabled: true` as browser-enabled for back-compat,
       `values.yaml:57`). Gate the auth ConfigMap (`configmap-ui-auth.yaml:1`) + mount
       (`deployment-ui.yaml:60`) on this helper, and make the ConfigMap **not iterate
       providers when there are none** (API-only must not break rendering)
-- [ ] **API config is a list, matching Go (High #2 + Medium schema-lag)**:
+- [x] **API config is a list, matching Go (High #2 + Medium schema-lag)**:
       `ui.auth.api.entries[]` of `{id, issuer, audience, type, usernameClaim, groupsClaim,
       allowedGroups, allowedUsers}` — **the same claim-mapping fields Task 1 added to the
       Go config** (without them chart users can't configure the mapping the feature
       exists for); mirror the multi-entry model with unique `(issuer,audience)`; emit each
       field into `auth.yaml` (same per-field copy pattern as the browser providers)
-- [ ] `values.yaml`+`values.schema.json`: the `ui.auth.api.entries[]` schema (array
+- [x] `values.yaml`+`values.schema.json`: the `ui.auth.api.entries[]` schema (array
       incl. `type`/`usernameClaim`/`groupsClaim`),
       `agent.auth.token` / `agent.auth.existingSecret` +
       **`agent.auth.tokenSecretKey`** (default e.g. `agent-token`); `agent.metricsPublic`
-- [ ] render a Secret (or reference `existingSecret`); inject `PORTREACH_AGENT_TOKEN`
+- [x] render a Secret (or reference `existingSecret`); inject `PORTREACH_AGENT_TOKEN`
       into **both** the agent DaemonSet and UI Deployment via `secretKeyRef`; add a
       **checksum/sha annotation** on both pod templates for the chart-managed Secret so
       a token change triggers a rollout (external Secret → manual rollout, documented)
-- [ ] **NetworkPolicy is optional/best-effort**: keep `networkPolicy.enabled` opt-in;
+- [x] **NetworkPolicy is optional/best-effort**: keep `networkPolicy.enabled` opt-in;
       document it is unreliable while `agent.network.hostNetwork: true` (the real chart
       path — `values.yaml:160`). For NP-enforced isolation, use the existing
       `agent.network.hostNetwork: false` + `agent.network.hostPort.enabled: false`,
       documenting the changed egress vantage point (pod network vs node egress)
-- [ ] extend `internal/charttest`: **API-only auth renders** (`portreach.auth.enabled`
+      (kept opt-in; full prose documentation lands in Task 6)
+- [x] extend `internal/charttest`: **API-only auth renders** (`portreach.auth.enabled`
       via `ui.auth.api` with browser off → ConfigMap+mount present, no provider
       iteration); **multiple `api.entries[]` render** into `auth.yaml`; legacy
       `ui.auth.enabled: true` still renders browser auth; token wired to both workloads
       with `tokenSecretKey`; checksum annotation present; NP selector when enabled;
       `helm lint`
-- [ ] run tests — must pass before Task 6
+- [x] run tests — must pass before Task 6
 
 ### Task 6: Documentation
 - [ ] `docs/configuration.md`: API bearer (obtain a JWT access token; CI

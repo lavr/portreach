@@ -1,12 +1,15 @@
-{{- if and .Values.ui.enabled .Values.ui.auth.enabled -}}
+{{- if and .Values.ui.enabled (eq (include "portreach.auth.enabled" .) "true") -}}
 {{- $a := .Values.ui.auth -}}
+{{- $browser := eq (include "portreach.auth.browser.enabled" .) "true" -}}
+{{- $api := eq (include "portreach.auth.api.enabled" .) "true" -}}
+{{- /* allowedUsers is the global allowlist; it applies to both auth paths. */ -}}
+{{- $auth := dict "allowedUsers" ($a.allowedUsers | default list) -}}
+{{- if $browser -}}
 {{- if not $a.providers -}}
-{{- fail "ui.auth.enabled is true but ui.auth.providers is empty" -}}
+{{- fail "ui.auth browser is enabled but ui.auth.providers is empty" -}}
 {{- end -}}
 {{- /* redirectURL is optional: empty selects host-derived callback mode. */ -}}
-{{- $auth := dict
-      "cookieKey" (printf "${%s}" $a.cookieKeyEnv)
-      "allowedUsers" ($a.allowedUsers | default list) -}}
+{{- $_ := set $auth "cookieKey" (printf "${%s}" $a.cookieKeyEnv) -}}
 {{- with $a.redirectURL }}{{- $_ := set $auth "redirectURL" . -}}{{- end -}}
 {{- with $a.allowedRedirectHosts }}{{- $_ := set $auth "allowedRedirectHosts" . -}}{{- end -}}
 {{- with $a.forwardedHostHeader }}{{- $_ := set $auth "forwardedHostHeader" . -}}{{- end -}}
@@ -35,6 +38,28 @@
   {{- $providers = append $providers $p -}}
 {{- end -}}
 {{- $_ := set $auth "providers" $providers -}}
+{{- end -}}
+{{- if $api -}}
+{{- /* Bearer-token issuers for /api/*; matched by (issuer, audience). */ -}}
+{{- $entries := list -}}
+{{- range (($a.api | default dict).entries | default list) -}}
+  {{- $id := required "ui.auth.api.entries[].id is required" .id -}}
+  {{- $issuer := required (printf "ui.auth.api.entries[%s].issuer is required" $id) .issuer -}}
+  {{- $audience := required (printf "ui.auth.api.entries[%s].audience is required" $id) .audience -}}
+  {{- $e := dict
+        "id" $id
+        "issuer" $issuer
+        "audience" $audience -}}
+  {{- with .type }}{{- $_ := set $e "type" . -}}{{- end -}}
+  {{- with .usernameClaim }}{{- $_ := set $e "usernameClaim" . -}}{{- end -}}
+  {{- with .groupsClaim }}{{- $_ := set $e "groupsClaim" . -}}{{- end -}}
+  {{- with .groupMatch }}{{- $_ := set $e "groupMatch" . -}}{{- end -}}
+  {{- with .allowedGroups }}{{- $_ := set $e "allowedGroups" . -}}{{- end -}}
+  {{- with .allowedUsers }}{{- $_ := set $e "allowedUsers" . -}}{{- end -}}
+  {{- $entries = append $entries $e -}}
+{{- end -}}
+{{- $_ := set $auth "api" $entries -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

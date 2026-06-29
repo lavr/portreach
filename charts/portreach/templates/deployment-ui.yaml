@@ -26,6 +26,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- $podAnnotations := merge (.Values.ui.podAnnotations | default dict) (.Values.commonAnnotations | default dict) }}
+      {{- with include "portreach.agent.token.checksum" . }}
+      {{- $_ := set $podAnnotations "checksum/agent-token" . }}
+      {{- end }}
       {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
@@ -57,7 +60,7 @@ spec:
             - ":{{ .Values.ui.port }}"
             - --timeout
             - {{ .Values.ui.timeout | quote }}
-            {{- if .Values.ui.auth.enabled }}
+            {{- if eq (include "portreach.auth.enabled" .) "true" }}
             - --auth-config
             - /etc/portreach/auth/auth.yaml
             {{- end }}
@@ -99,7 +102,7 @@ spec:
             - name: PORTREACH_LOGIN_FOOTER
               value: {{ $loginBranding.footer | quote }}
             {{- end }}
-            {{- if .Values.ui.auth.enabled }}
+            {{- if eq (include "portreach.auth.browser.enabled" .) "true" }}
             {{- $secretName := include "portreach.auth.secretName" . }}
             - name: {{ .Values.ui.auth.cookieKeyEnv }}
               valueFrom:
@@ -113,6 +116,13 @@ spec:
                   name: {{ $secretName }}
                   key: {{ include "portreach.auth.providerSecretKey" (dict "provider" .) }}
             {{- end }}
+            {{- end }}
+            {{- if eq (include "portreach.agent.token.enabled" .) "true" }}
+            - name: PORTREACH_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "portreach.agent.token.secretName" . }}
+                  key: {{ .Values.agent.auth.tokenSecretKey }}
             {{- end }}
             {{- with .Values.ui.extraEnv }}
             {{- tpl (toYaml .) $ | nindent 12 }}
@@ -137,9 +147,9 @@ spec:
             {{- toYaml .Values.ui.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.ui.containerSecurityContext | nindent 12 }}
-          {{- if or .Values.ui.auth.enabled .Values.ui.extraVolumeMounts }}
+          {{- if or (eq (include "portreach.auth.enabled" .) "true") .Values.ui.extraVolumeMounts }}
           volumeMounts:
-            {{- if .Values.ui.auth.enabled }}
+            {{- if eq (include "portreach.auth.enabled" .) "true" }}
             - name: auth-config
               mountPath: /etc/portreach/auth
               readOnly: true
@@ -151,9 +161,9 @@ spec:
         {{- with .Values.ui.sidecars }}
         {{- tpl (toYaml .) $ | nindent 8 }}
         {{- end }}
-      {{- if or .Values.ui.auth.enabled .Values.ui.extraVolumes }}
+      {{- if or (eq (include "portreach.auth.enabled" .) "true") .Values.ui.extraVolumes }}
       volumes:
-        {{- if .Values.ui.auth.enabled }}
+        {{- if eq (include "portreach.auth.enabled" .) "true" }}
         - name: auth-config
           configMap:
             name: {{ include "portreach.ui.fullname" . }}-auth

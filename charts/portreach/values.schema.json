@@ -87,6 +87,22 @@
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
+            "browser": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" }
+              }
+            },
+            "api": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "entries": {
+                  "type": "array",
+                  "items": { "$ref": "#/definitions/authAPIEntry" }
+                }
+              }
+            },
             "redirectURL": { "type": "string" },
             "allowedUsers": {
               "type": "array",
@@ -144,6 +160,15 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "metricsPublic": { "type": "boolean" },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "token": { "type": "string" },
+            "existingSecret": { "type": "string" },
+            "tokenSecretKey": { "type": "string", "minLength": 1 }
+          }
+        },
         "targetPolicy": {
           "type": "object",
           "properties": {
@@ -329,6 +354,30 @@
         "usernameClaim": { "type": "string" },
         "groupsClaim": { "type": "string" },
         "hostedDomain": { "type": "string" }
+      }
+    },
+    "authAPIEntry": {
+      "type": "object",
+      "required": ["id", "issuer", "audience"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string" },
+        "issuer": { "type": "string", "minLength": 1 },
+        "audience": { "type": "string", "minLength": 1 },
+        "usernameClaim": { "type": "string" },
+        "groupsClaim": { "type": "string" },
+        "groupMatch": {
+          "type": "string",
+          "enum": ["exact", "subtree"]
+        },
+        "allowedGroups": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "allowedUsers": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     }
   }

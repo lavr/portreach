@@ -128,6 +128,51 @@ app.kubernetes.io/component: agent
 {{- default (printf "%sClientSecret" (regexReplaceAll "[^A-Za-z0-9._-]" $id "-")) $p.clientSecretKey -}}
 {{- end -}}
 
+{{/*
+Auth toggles. Browser SSO and the API bearer path are independent. The legacy
+`ui.auth.enabled` is honoured as a browser toggle for back-compat. Each helper
+emits the string "true" (truthy) or "" (falsy) so callers can `eq "true"`.
+*/}}
+{{- define "portreach.auth.browser.enabled" -}}
+{{- $auth := .Values.ui.auth | default dict -}}
+{{- $browser := $auth.browser | default dict -}}
+{{- if or $browser.enabled $auth.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{- define "portreach.auth.api.enabled" -}}
+{{- $api := (.Values.ui.auth | default dict).api | default dict -}}
+{{- if $api.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{- define "portreach.auth.enabled" -}}
+{{- if or (eq (include "portreach.auth.browser.enabled" .) "true") (eq (include "portreach.auth.api.enabled" .) "true") -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Agent shared-token helpers. The token is configured when a literal value or an
+existing Secret is supplied; the chart manages the Secret only for a literal.
+*/}}
+{{- define "portreach.agent.token.enabled" -}}
+{{- $a := .Values.agent.auth | default dict -}}
+{{- if or $a.token $a.existingSecret -}}true{{- end -}}
+{{- end -}}
+
+{{- define "portreach.agent.token.secretName" -}}
+{{- $a := .Values.agent.auth | default dict -}}
+{{- $a.existingSecret | default (printf "%s-token" (include "portreach.agent.fullname" .)) -}}
+{{- end -}}
+
+{{/*
+Checksum of the chart-managed agent token so a value change rolls the pods that
+mount it. Empty for an externally-managed Secret (rotation = manual rollout).
+*/}}
+{{- define "portreach.agent.token.checksum" -}}
+{{- $a := .Values.agent.auth | default dict -}}
+{{- if and $a.token (not $a.existingSecret) -}}
+{{- $a.token | toString | sha256sum -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "portreach.probe" -}}
 {{- $probe := . -}}
 {{- if and $probe $probe.enabled -}}

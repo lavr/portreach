@@ -64,7 +64,30 @@ ui:
     tls: []
 
   auth:
+    # Legacy master toggle. Honoured for back-compat as the *browser SSO* switch
+    # (equivalent to browser.enabled: true). Prefer the explicit toggles below.
     enabled: false
+    # Browser SSO (OAuth2/OIDC login + sealed-cookie session). Independent of the
+    # API bearer path: enable either, both, or neither.
+    browser:
+      enabled: false
+    # API bearer tokens on /api/* (Boundary A). Accepts IdP-issued JWT access
+    # tokens, validated by the issuer's JWKS (iss + aud + exp + signature). Each
+    # entry is matched to a token by its (issuer, audience) pair — both required
+    # and unique across entries. OIDC/JWT only: GitHub and opaque tokens are
+    # unsupported. No client secret is needed (JWKS verification is offline).
+    api:
+      enabled: false
+      entries: []
+      # - id: ci
+      #   issuer: https://keycloak.corp/realms/main
+      #   audience: portreach
+      #   type: ""              # optional preset (e.g. gitlab) for claim fallbacks
+      #   usernameClaim: ""     # default preferred_username (then sub)
+      #   groupsClaim: ""       # default groups
+      #   allowedGroups: []
+      #   allowedUsers: []
+      #   groupMatch: ""        # exact (default) or subtree
     # OAuth callback URL. Empty = host-derived mode: the redirect_uri is built
     # per request from the incoming host, so one deployment authenticates across
     # every ingress hostname (register each callback in the IdP app). Set a value
@@ -165,6 +188,24 @@ agent:
   targetPolicy:
     allow: ""
     deny: ""
+
+  # Shared bearer token (Boundary B). When set, the agent requires
+  # `Authorization: Bearer <token>` on /check (and /metrics, unless metricsPublic)
+  # and the UI sends it on every probe. Empty = open (today's behaviour). This is
+  # the *primary* isolation boundary; NetworkPolicy is best-effort under
+  # hostNetwork (see networkPolicy below). Generate with `openssl rand -hex 32`.
+  auth:
+    # Literal token. The chart renders a Secret and adds a checksum annotation so
+    # a value change rolls both workloads. Mutually exclusive with existingSecret.
+    token: ""
+    # Reference an out-of-band Secret instead (rotation = manual rollout).
+    existingSecret: ""
+    # Key under which the token is stored in the Secret.
+    tokenSecretKey: agent-token
+
+  # Leave /metrics open for Prometheus even when a token is set (/check stays
+  # gated). Relevant because hostNetwork exposes /metrics on the node.
+  metricsPublic: false
 
   network:
     hostNetwork: true
