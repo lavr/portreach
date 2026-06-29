@@ -18,6 +18,7 @@ func runAgent(args []string, deps Deps) error {
 	deny := fs.String("deny", "", "comma-separated deny CIDR list (takes precedence over allow)")
 	authToken := fs.String("auth-token", os.Getenv("PORTREACH_AGENT_TOKEN"), "shared bearer token required on /check and /metrics; empty = open (env PORTREACH_AGENT_TOKEN)")
 	metricsPublic := fs.Bool("metrics-public", envBool("PORTREACH_AGENT_METRICS_PUBLIC", false), "leave /metrics open for scraping even when a token is set; /check stays gated (env PORTREACH_AGENT_METRICS_PUBLIC)")
+	allowMetadata := fs.Bool("allow-metadata", envBool("PORTREACH_AGENT_ALLOW_METADATA", false), "remove the built-in cloud-metadata/link-local (169.254.0.0/16, fd00:ec2::254) connect guard; operator --deny still applies (env PORTREACH_AGENT_ALLOW_METADATA)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // -h/--help: flag already printed usage, exit cleanly
@@ -32,7 +33,7 @@ func runAgent(args []string, deps Deps) error {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           agent.New("", policy, agent.WithToken(*authToken), agent.WithMetricsPublic(*metricsPublic)).Handler(),
+		Handler:           agent.New("", policy, agent.WithToken(*authToken), agent.WithMetricsPublic(*metricsPublic), agent.WithAllowMetadata(*allowMetadata)).Handler(),
 		ReadHeaderTimeout: 10 * time.Second, // bound slow-header (Slowloris) clients
 	}
 	return serveWithShutdown(srv, deps)

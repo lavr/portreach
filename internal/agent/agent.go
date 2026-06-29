@@ -59,6 +59,27 @@ func (p *Policy) empty() bool {
 	return len(p.allow) == 0 && len(p.deny) == 0
 }
 
+// metadataNets are the link-local / cloud-metadata networks the agent refuses to
+// connect to by default. The whole IPv4 link-local range 169.254.0.0/16 is denied
+// (deliberately broader than the single metadata IP — it covers AWS/GCP/Azure IMDS
+// 169.254.169.254, ECS task metadata 169.254.170.2, and any other link-local
+// target), plus the IPv6 IMDS address fd00:ec2::254. The guard runs at connect
+// time, independent of the operator Policy, and is removed only by
+// WithAllowMetadata.
+func metadataNets() []*net.IPNet {
+	cidrs := []string{"169.254.0.0/16", "fd00:ec2::254/128"}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		// Static, known-good CIDRs: a parse failure is a programming error.
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic("agent: invalid metadata CIDR " + c + ": " + err.Error())
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}
+
 // Allowed reports whether connecting to ip is permitted.
 func (p *Policy) Allowed(ip net.IP) bool {
 	for _, n := range p.deny {
@@ -97,6 +118,15 @@ type Server struct {
 	resolver ipResolver
 	metrics  metrics
 
+	// guard is the connect-time deny guard applied to every probe dial. By default
+	// it denies the cloud-metadata / link-local set (see metadataNets); nil when
+	// WithAllowMetadata removed it. It is independent of policy — operator --deny
+	// still applies and wins.
+	guard *probe.DenyGuard
+	// allowMetadata, when set via WithAllowMetadata, removes the built-in metadata
+	// guard. The operator Policy (--deny) is unaffected.
+	allowMetadata bool
+
 	// token, when non-empty, is the shared bearer secret required on /check and
 	// (unless metricsPublic) /metrics. Empty disables the check entirely, keeping
 	// the agent open — the backward-compatible default.
@@ -121,6 +151,14 @@ func WithMetricsPublic(public bool) Option {
 	return func(s *Server) { s.metricsPublic = public }
 }
 
+// WithAllowMetadata removes the built-in cloud-metadata / link-local connect
+// guard (default-on). It opts back into the pre-guard behaviour for deployments
+// that legitimately probe a link-local address. The operator Policy (--deny) is
+// independent and still applies and wins.
+func WithAllowMetadata(allow bool) Option {
+	return func(s *Server) { s.allowMetadata = allow }
+}
+
 // New builds an agent Server. An empty nodeName is resolved via NodeName; a nil
 // policy means allow-all.
 func New(nodeName string, policy *Policy, opts ...Option) *Server {
@@ -133,6 +171,11 @@ func New(nodeName string, policy *Policy, opts ...Option) *Server {
 	s := &Server{nodeName: nodeName, policy: policy, resolver: net.DefaultResolver}
 	for _, o := range opts {
 		o(s)
+	}
+	// Install the default-on metadata guard unless the operator opted out. Built
+	// after options so WithAllowMetadata can suppress it.
+	if !s.allowMetadata {
+		s.guard = probe.NewDenyGuard(metadataNets())
 	}
 	return s
 }
@@ -251,7 +294,17 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	// so the policy resolution and the probe share a single timeout budget —
 	// context.WithDeadline keeps the earlier resolveCtx deadline, making timeout
 	// the real end-to-end cap instead of being spent once per step.
-	res := probe.Run(resolveCtx, host, dialHosts, port, proto, timeout, dns)
+	res := probe.Run(resolveCtx, host, dialHosts, port, proto, timeout, dns, s.guard)
+
+	// A connect-guard refusal (cloud metadata / link-local) surfaces as res.Denied.
+	// Route it to the exact same denial path as a resolveTarget policy deny —
+	// increment the denied metric and return the same 403 shape — so metadata and
+	// policy denials are indistinguishable to clients.
+	if res.Denied {
+		s.metrics.denied.Add(1)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "target denied by policy"})
+		return
+	}
 	if res.TCP != nil && res.TCP.OK {
 		s.metrics.ok.Add(1)
 	} else {

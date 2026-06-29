@@ -183,17 +183,17 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 - [x] run tests — must pass before Task 4
 
 ### Task 4: Default-deny cloud metadata (connect-time guard, not policy-mode)
-- [ ] **define the probe↔agent contract first (#R5)**: `probe.Run` returns only a
+- [x] **define the probe↔agent contract first (#R5)**: `probe.Run` returns only a
       `Result` and `handleCheck` currently writes HTTP 200 + counts fail
       (`probe.go:109`, `agent.go:194`). Add an explicit typed status to `Result` — e.g.
       `Result.Denied bool` (+ `Result.DeniedReason string`) — so a connect-guard refusal
       is distinguishable from a generic dial failure **without** changing `Run`'s
       "Result-only, never errors except invalid input" contract
-- [ ] **JSON wire-compat (Low #5)**: `probe.Result` is serialized straight to the API
+- [x] **JSON wire-compat (Low #5)**: `probe.Result` is serialized straight to the API
       (`probe.go:56`); the new fields **must** use `json:"denied,omitempty"` /
       `json:"denied_reason,omitempty"` so a normal (non-denied) response is byte-identical
       to today. Add a test asserting normal-response JSON gains no new keys
-- [ ] `internal/probe`: connect guard on the dial path via `net.Dialer.Control` rejects
+- [x] `internal/probe`: connect guard on the dial path via `net.Dialer.Control` rejects
       connects whose resolved IP ∈ a deny set. A `Control` rejection is a **candidate-level**
       signal (recorded via the shared flag), **not** an immediate `Result.Denied`:
       `Run` promotes it to `Result.Denied=true` (+ reason) **only when the overall dial
@@ -201,7 +201,7 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       the guard. If an allowed sibling still connected (`TCP.OK == true`), a candidate-level
       denial **must not** surface as `Result.Denied` — it stays a normal OK result (per the
       narrowed semantics below)
-- [ ] **concurrency-safe guard signal (Medium)**: `Control` can fire from multiple
+- [x] **concurrency-safe guard signal (Medium)**: `Control` can fire from multiple
       goroutines at once — `probe.dial` runs a worker pool of `DialContext` calls
       (`probe.go:223`) and `net.Dialer` itself may stagger Happy-Eyeballs attempts — so the
       guard-hit signal **must not** be a plain `bool`/`string` (data race; `go test -race`
@@ -210,7 +210,7 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       typed-error path returned from `Control` that `Run` inspects after the dial. `Run`
       reads the atomic **after** the dial completes, then applies the `out.OK == false`
       gate above. Run the package under `-race`
-- [ ] **mixed-address semantics — what the connect guard actually guarantees (High)**:
+- [x] **mixed-address semantics — what the connect guard actually guarantees (High)**:
       the guard's hard property is that **a connection to a denied IP is never
       established** — `Control` runs before every connection `net.Dialer` actually
       attempts, so a denied address is refused at connect. It does **not** guarantee
@@ -232,18 +232,18 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       denied-wins *reporting* is ever required: pre-resolve the set and check it like
       policy mode — rejected here because it reintroduces the duplicate-lookup, rebinding
       window, and lost CNAME/DNS-error reporting that finding #6 deliberately avoids.)
-- [ ] `internal/agent`: by default install a guard for the **whole IPv4 link-local
+- [x] `internal/agent`: by default install a guard for the **whole IPv4 link-local
       range `169.254.0.0/16`** (covers IMDS `169.254.169.254`, ECS `169.254.170.2`, etc.)
       **+ IPv6 `fd00:ec2::254`**; `--allow-metadata` (chart
       `agent.targetPolicy.allowMetadata`) removes only this built-in guard; operator
       `--deny` / `Policy` is unchanged and still applies/wins
-- [ ] **`handleCheck` inspects `res.Denied`** and routes it to the existing
+- [x] **`handleCheck` inspects `res.Denied`** and routes it to the existing
       policy-denial path: increment the `denied` metric and return the same denial
       response shape/status as a `resolveTarget` policy deny (`agent.go:176`), so
       metadata and policy denials are identical to clients (document the HTTP status)
-- [ ] **do not** enable `resolveTarget` policy-mode for open deployments — the guard is
+- [x] **do not** enable `resolveTarget` policy-mode for open deployments — the guard is
       independent of `Policy.empty()`
-- [ ] write tests: metadata IP refused at connect → **typed denial, `denied` metric
+- [x] write tests: metadata IP refused at connect → **typed denial, `denied` metric
       incremented, denial-shaped response** (not a generic TCP error); **name resolving
       only to a denied IP → `Result.Denied=true`** (no connection established); **a denied
       IP is never successfully connected to even when a mixed RRset has an allowed sibling**
@@ -253,7 +253,7 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
       never attempt the denied IP, per the narrowed semantics above); **plain hostname
       still dials, reports CNAME and DNS errors exactly as today** (compat); `allowMetadata`
       re-enables; operator `--deny` still wins
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: Optional agent-side limiter + Helm wiring
 - [ ] `internal/cmd/agent.go`: `--rate-*` per-process/per-target cap on `/check`

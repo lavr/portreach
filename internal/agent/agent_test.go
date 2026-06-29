@@ -513,3 +513,106 @@ func TestParsePolicyError(t *testing.T) {
 		t.Error("expected error for invalid deny CIDR (missing mask)")
 	}
 }
+
+// TestCheckMetadataDeniedByDefault verifies the default-on connect guard refuses
+// the whole IPv4 link-local range (not just the single metadata IP): a request to
+// 169.254.169.254 (IMDS) and a second in-range IP (169.254.170.2, ECS) is routed
+// to the same denial path as a policy deny — 403 with the same shape and the
+// denied metric incremented. The guard refuses at connect, so no real outbound
+// connection is made (hermetic).
+func TestCheckMetadataDeniedByDefault(t *testing.T) {
+	for _, ip := range []string{"169.254.169.254", "169.254.170.2"} {
+		srv := newTestServer(t, "", "") // open agent, default metadata guard on
+		// No short timeout: the guard refuses at connect and returns instantly, so a
+		// generous budget keeps the test fast while avoiding a deadline-exhaustion
+		// flake (an already-expired dial context never reaches Control).
+		resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=%s&port=80", ip))
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: status = %d, want 403 (metadata denied); body=%s", ip, resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "denied") {
+			t.Errorf("%s: expected denied message, got %s", ip, body)
+		}
+		_, mbody := get(t, srv.URL, "/metrics")
+		if !strings.Contains(string(mbody), `portreach_checks_total{result="denied"} 1`) {
+			t.Errorf("%s: expected denied=1, got %s", ip, mbody)
+		}
+		srv.Close()
+	}
+}
+
+// TestCheckMetadataDeniedEvenWhenPolicyAllows proves the guard is independent of
+// the operator Policy: a hostname resolving to a metadata IP that the policy
+// explicitly allows (0.0.0.0/0) is still refused at connect and reported denied.
+func TestCheckMetadataDeniedEvenWhenPolicyAllows(t *testing.T) {
+	policy, err := ParsePolicy("0.0.0.0/0", "")
+	if err != nil {
+		t.Fatalf("ParsePolicy: %v", err)
+	}
+	s := New("testnode", policy)
+	s.resolver = fakeResolver{ips: []net.IPAddr{{IP: net.ParseIP("169.254.169.254")}}}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp, body := get(t, srv.URL, "/check?host=imds.test&port=80")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (guard wins over allow-all policy); body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestAllowMetadataRemovesGuard verifies WithAllowMetadata removes only the
+// built-in guard (default on, removed when opted out).
+func TestAllowMetadataRemovesGuard(t *testing.T) {
+	if New("testnode", nil).guard == nil {
+		t.Error("default agent must install the metadata guard")
+	}
+	if New("testnode", nil, WithAllowMetadata(true)).guard != nil {
+		t.Error("WithAllowMetadata(true) must remove the metadata guard")
+	}
+}
+
+// TestOperatorDenyWinsWithAllowMetadata proves an operator --deny still applies
+// and wins even when the built-in metadata guard is opted out: opting out of the
+// guard never overrides an explicit deny.
+func TestOperatorDenyWinsWithAllowMetadata(t *testing.T) {
+	policy, err := ParsePolicy("", "127.0.0.0/8")
+	if err != nil {
+		t.Fatalf("ParsePolicy: %v", err)
+	}
+	srv := httptest.NewServer(New("testnode", policy, WithAllowMetadata(true)).Handler())
+	defer srv.Close()
+
+	resp, body := get(t, srv.URL, "/check?host=127.0.0.1&port=80")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (operator --deny still wins); body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestCheckPlainHostnameUnchangedByGuard is the compat assertion: a normal target
+// (loopback listener) dials and reports exactly as before with the default guard
+// installed — no denial, CNAME/DNS reporting intact.
+func TestCheckPlainHostnameUnchangedByGuard(t *testing.T) {
+	ln, port := openPort(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	srv := newTestServer(t, "", "") // default metadata guard on
+	defer srv.Close()
+
+	resp, body := get(t, srv.URL, fmt.Sprintf("/check?host=localhost&port=%d&timeout=2s", port))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (normal target unaffected by guard); body=%s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), `"denied"`) {
+		t.Errorf("normal response must not contain a denied key, got %s", body)
+	}
+	var cr checkResp
+	if err := json.Unmarshal(body, &cr); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, body)
+	}
+	if cr.TCP == nil || !cr.TCP.OK {
+		t.Errorf("expected TCP.OK on a reachable target, got %+v", cr.TCP)
+	}
+	if cr.DNS == nil || len(cr.DNS.Resolved) == 0 {
+		t.Errorf("expected DNS reporting intact for a plain hostname, got %+v", cr.DNS)
+	}
+}

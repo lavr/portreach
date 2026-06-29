@@ -9,6 +9,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -62,6 +64,73 @@ type Result struct {
 	DNS   *DNSResult  `json:"dns,omitempty"`
 	TCP   *DialResult `json:"tcp,omitempty"`
 	Error string      `json:"error,omitempty"`
+
+	// Denied is set when the connect-time guard refused every address the dial
+	// attempted and no TCP connection succeeded, so the caller can route a guard
+	// refusal to its policy-denial path instead of reporting a generic dial
+	// failure. A guard rejection that loses the race to an allowed sibling leaves
+	// Denied false — the denied IP was simply never connected to (the narrowed
+	// mixed-RRset semantics). omitempty on both fields keeps a normal (non-denied)
+	// response byte-identical to before these fields existed.
+	Denied       bool   `json:"denied,omitempty"`
+	DeniedReason string `json:"denied_reason,omitempty"`
+}
+
+// DenyReason is the fixed reason reported when the connect guard denies a probe.
+// It is a constant because the deny set is static, so no per-connection mutable
+// reason string has to cross goroutines — only the atomic hit flag does.
+const DenyReason = "destination is a denied (cloud metadata / link-local) address"
+
+// errConnDenied is returned by the guard's Control hook to refuse a connection.
+var errConnDenied = errors.New("connection to denied address refused")
+
+// DenyGuard refuses TCP connects whose resolved IP falls inside any of its
+// networks. It is enforced at connect time via net.Dialer.Control, so it sees the
+// actual address net.Dialer selected — defeating DNS rebinding — without the probe
+// pre-resolving the name (which would lose the CNAME / DNS-error reporting normal
+// targets get). A rejection is candidate-level: it sets a shared atomic flag and
+// fails that one connect; Run promotes it to Result.Denied only when the whole
+// dial produced no successful connection.
+type DenyGuard struct {
+	nets []*net.IPNet
+}
+
+// NewDenyGuard returns a guard refusing connects to any address in nets, or nil
+// when nets is empty (nil guard == no guard, the open default).
+func NewDenyGuard(nets []*net.IPNet) *DenyGuard {
+	if len(nets) == 0 {
+		return nil
+	}
+	return &DenyGuard{nets: nets}
+}
+
+// denied reports whether ip falls in any guarded network.
+func (g *DenyGuard) denied(ip net.IP) bool {
+	for _, n := range g.nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// control returns a net.Dialer.Control hook that refuses a connect to a guarded
+// address and records the hit on the supplied atomic flag. The hook can run from
+// several goroutines at once — the dial worker pool, plus net.Dialer's own
+// Happy-Eyeballs attempts for a single name — so it touches only the atomic and
+// the read-only nets, never shared mutable memory.
+func (g *DenyGuard) control(hit *atomic.Bool) func(network, address string, c syscall.RawConn) error {
+	return func(network, address string, c syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			host = address
+		}
+		if ip := net.ParseIP(host); ip != nil && g.denied(ip) {
+			hit.Store(true)
+			return errConnDenied
+		}
+		return nil
+	}
 }
 
 // Validate checks the probe inputs and normalizes the protocol and timeout.
@@ -106,9 +175,14 @@ func Validate(host string, port int, proto string, timeout time.Duration) (strin
 // making the report describe addresses that were never dialed or authorized.
 // Pass nil to have Run resolve host itself.
 //
+// guard, when non-nil, is a connect-time DenyGuard: a connection to any address
+// it covers is refused at dial time (see DenyGuard). Pass nil to dial without a
+// guard (today's behaviour). The guard never changes the dial/report path for an
+// allowed target; it only refuses connects to denied IPs.
+//
 // It never panics: failures are recorded in the returned Result rather than
 // returned as an error (except invalid input).
-func Run(ctx context.Context, host string, dialHosts []string, port int, proto string, timeout time.Duration, dns *DNSResult) Result {
+func Run(ctx context.Context, host string, dialHosts []string, port int, proto string, timeout time.Duration, dns *DNSResult, guard *DenyGuard) Result {
 	proto, timeout, err := Validate(host, port, proto, timeout)
 	res := Result{Host: host, Port: port, Proto: proto}
 	if err != nil {
@@ -132,7 +206,18 @@ func Run(ctx context.Context, host string, dialHosts []string, port int, proto s
 	dialCtx, cancel2 := context.WithDeadline(ctx, deadline)
 	defer cancel2()
 
-	res.TCP, res.SrcIP = dial(dialCtx, dialHosts, port)
+	var guardHit bool
+	res.TCP, res.SrcIP, guardHit = dial(dialCtx, dialHosts, port, guard)
+
+	// Promote a connect-guard rejection to a typed denial only when the dial as a
+	// whole found no reachable address. If an allowed sibling connected first the
+	// denied IP was never reached, so the result stays a normal OK (the narrowed
+	// mixed-RRset semantics). guardHit is read after dial has fully returned, so
+	// the atomic is settled — no race with in-flight workers.
+	if guardHit && (res.TCP == nil || !res.TCP.OK) {
+		res.Denied = true
+		res.DeniedReason = DenyReason
+	}
 	return res
 }
 
@@ -174,10 +259,10 @@ func resolve(ctx context.Context, host string) *DNSResult {
 // an already-expired dial. The "reachable as long as ANY address is" guarantee is
 // therefore unconditional only up to maxConcurrentDials addresses; for larger
 // RRsets it is best-effort (see that constant for why this tradeoff is accepted).
-// It returns the dial result plus the local source IP observed on the winning
-// connection (empty if every dial failed). The full timeout applies to the race
-// as a whole.
-func dial(ctx context.Context, hosts []string, port int) (*DialResult, string) {
+// It returns the dial result, the local source IP observed on the winning
+// connection (empty if every dial failed), and whether the connect guard refused
+// at least one address. The full timeout applies to the race as a whole.
+func dial(ctx context.Context, hosts []string, port int, guard *DenyGuard) (*DialResult, string, bool) {
 	out := &DialResult{}
 	portStr := strconv.Itoa(port)
 	start := time.Now()
@@ -220,7 +305,14 @@ func dial(ctx context.Context, hosts []string, port int) (*DialResult, string) {
 		}
 	}()
 
+	// guardHit records whether the connect guard refused any address. It is shared
+	// across the worker pool (and net.Dialer's own Happy-Eyeballs attempts), so it
+	// must be atomic; Run reads it only after every worker has finished.
+	var guardHit atomic.Bool
 	var d net.Dialer
+	if guard != nil {
+		d.Control = guard.control(&guardHit)
+	}
 	for i := 0; i < workers; i++ {
 		go func() {
 			for addr := range addrCh {
@@ -255,11 +347,11 @@ func dial(ctx context.Context, hosts []string, port int) (*DialResult, string) {
 		}
 	}
 	if out.OK {
-		return out, winnerSrc
+		return out, winnerSrc, guardHit.Load()
 	}
 	out.MS = msSince(start)
 	out.Error = normalizeErr(lastErr)
-	return out, ""
+	return out, "", guardHit.Load()
 }
 
 // dedup returns the unique hosts in their original order.
