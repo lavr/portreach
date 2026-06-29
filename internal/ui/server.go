@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -20,6 +21,7 @@ type Server struct {
 	agentToken string
 	limiter    *ratelimit.Limiter // nil = unlimited (default)
 	logger     *slog.Logger       // throttle audit events; nil = slog.Default()
+	fanoutCfg  FanoutConfig       // per-check fan-out bounds; zero = unlimited
 }
 
 // New builds a UI Server. timeout bounds the whole fan-out budget; a
@@ -169,12 +171,30 @@ func (s *Server) handleAPICheck(w http.ResponseWriter, r *http.Request) {
 	// real probe attempt rather than an automatic failure.
 	target.Timeout = clampTimeout(target.Timeout, remainingBudget(ctx, s.timeout))
 
-	results := CheckAll(ctx, s.client, agents, target, s.agentToken)
+	results, discovered, queried, dropped := s.fanout(ctx, r, agents, target)
 	writeJSON(w, http.StatusOK, Response{
-		Target:  target,
-		Agents:  results,
-		Summary: Summarize(results),
+		Target:     target,
+		Agents:     results,
+		Summary:    Summarize(results),
+		Discovered: discovered,
+		Queried:    queried,
+		Dropped:    dropped,
 	})
+}
+
+// fanout applies the optional MaxAgentsPerCheck cap (deterministic, sorted by
+// Addr), runs the bounded fan-out, and returns the results plus the
+// discovered/queried/dropped counts so callers can report partial results
+// unambiguously. A positive drop count is also surfaced as an audit event.
+func (s *Server) fanout(ctx context.Context, r *http.Request, agents []discovery.Agent, target Target) (results []AgentResult, discovered, queried, dropped int) {
+	discovered = len(agents)
+	selected, dropped := selectAgents(agents, s.fanoutCfg.MaxAgentsPerCheck)
+	queried = len(selected)
+	if dropped > 0 {
+		s.logDrop(r, target, discovered, queried, dropped)
+	}
+	results = CheckAll(ctx, s.client, selected, target, s.agentToken, s.fanoutCfg.MaxConcurrentFanout)
+	return results, discovered, queried, dropped
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

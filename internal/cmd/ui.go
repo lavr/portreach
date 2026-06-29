@@ -42,6 +42,8 @@ func runUI(args []string, deps Deps) error {
 	rateGlobalBurst := fs.Int("rate-global-burst", envInt("PORTREACH_RATE_GLOBAL_BURST", 0), "process-wide bucket capacity (env PORTREACH_RATE_GLOBAL_BURST)")
 	trustedProxies := fs.String("trusted-proxies", os.Getenv("PORTREACH_TRUSTED_PROXIES"), "comma-separated CIDRs/IPs whose forwarded header is trusted for client-IP keying (env PORTREACH_TRUSTED_PROXIES)")
 	forwardedHeader := fs.String("forwarded-header", os.Getenv("PORTREACH_FORWARDED_HEADER"), "forwarded client-IP header trusted only from trusted-proxies; empty = X-Forwarded-For (env PORTREACH_FORWARDED_HEADER)")
+	maxAgentsPerCheck := fs.Int("max-agents-per-check", envInt("PORTREACH_MAX_AGENTS_PER_CHECK", 0), "cap agents queried per check; 0 = unlimited (every node). Over the cap, agents are chosen deterministically by address (env PORTREACH_MAX_AGENTS_PER_CHECK)")
+	maxConcurrentFanout := fs.Int("max-concurrent-fanout", envInt("PORTREACH_MAX_CONCURRENT_FANOUT", 0), "bound concurrent per-check agent requests; 0 = unlimited (a goroutine per agent) (env PORTREACH_MAX_CONCURRENT_FANOUT)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // -h/--help: flag already printed usage, exit cleanly
@@ -82,7 +84,14 @@ func runUI(args []string, deps Deps) error {
 		}
 	}
 
-	handler, err := buildUIHandler(disc, *timeout, *authConfig, *agentToken, limiter, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
+	// Per-check fan-out bounds. Both default to 0 = unlimited (today's
+	// every-node behaviour); a negative value is rejected before the server starts.
+	fanout := ui.FanoutConfig{MaxAgentsPerCheck: *maxAgentsPerCheck, MaxConcurrentFanout: *maxConcurrentFanout}
+	if err := fanout.Validate(); err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+
+	handler, err := buildUIHandler(disc, *timeout, *authConfig, *agentToken, limiter, fanout, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
 	if err != nil {
 		return &ExitError{Code: 2, Err: err}
 	}
@@ -105,7 +114,7 @@ type handlerBranding struct {
 	login auth.LoginBranding
 }
 
-func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath, agentToken string, limiter *ratelimit.Limiter, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
+func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath, agentToken string, limiter *ratelimit.Limiter, fanout ui.FanoutConfig, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
 	var branding handlerBranding
 	if len(brandings) > 0 {
 		branding = brandings[0]
@@ -117,6 +126,7 @@ func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfig
 		ui.WithAgentToken(agentToken),
 		ui.WithLimiter(limiter),
 		ui.WithLogger(logger),
+		ui.WithFanout(fanout),
 	).Handler()
 	// Audit every reachability check, attributing it to the authenticated user
 	// (or anonymous when auth is off, since no identity reaches the context).

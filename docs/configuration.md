@@ -105,7 +105,11 @@ readiness probes keep working.
 ## `portreach ui`
 
 The aggregator and web form. Discovers agents, fans out one target check to all
-of them, and renders a per-point table.
+of them, and renders a per-point table. By default the check reaches every
+discovered agent; `--max-agents-per-check` optionally bounds the blast radius,
+and the `/api/check` response then carries explicit `discovered` / `queried` /
+`dropped` counts (with `summary.total` = queried) so partial coverage is never
+silent.
 
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
@@ -115,6 +119,8 @@ of them, and renders a per-point table.
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | agent port for DNS-discovered and port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
 | `--agent-token` | `PORTREACH_AGENT_TOKEN` | | shared bearer token sent to agents on `/check`; empty = none ([Boundary B](#agent-token-boundary-b--the-primary-isolation-boundary)) |
+| `--max-agents-per-check` | `PORTREACH_MAX_AGENTS_PER_CHECK` | `0` | cap how many discovered agents one check queries; `0` = unlimited (every node). Over the cap, agents are selected deterministically by address and the rest are reported as `dropped` |
+| `--max-concurrent-fanout` | `PORTREACH_MAX_CONCURRENT_FANOUT` | `0` | bound concurrent per-check agent requests; `0` = unlimited (a goroutine per agent) |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | path to the SSO auth config YAML; empty = auth disabled |
 | `--ui-title` | `PORTREACH_UI_TITLE` | localized heading | HTML page heading; explicitly empty suppresses `<h1>` |
 | `--ui-description` | `PORTREACH_UI_DESCRIPTION` | | trusted HTML block under the heading |

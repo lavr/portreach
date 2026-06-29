@@ -10,7 +10,9 @@ DaemonSet on `hostNetwork`), and the result is summed up in a web form:
 
 It answers the everyday question *"does the cluster have access to
 `DWH-ClickHouse-pre:8123`?"* — checked from every node, not just from your
-laptop.
+laptop. (Operators can optionally cap the fan-out with
+`--max-agents-per-check` to bound the blast radius on large clusters; the
+default `0` keeps the every-node behaviour, and any dropped agents are reported.)
 
 ## Why
 
@@ -136,6 +138,8 @@ the hostname.
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | port for DNS-discovered / port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
 | `--agent-token` | `PORTREACH_AGENT_TOKEN` | | bearer token sent to agents on `/check`; empty = none |
+| `--max-agents-per-check` | `PORTREACH_MAX_AGENTS_PER_CHECK` | `0` | cap agents queried per check; `0` = unlimited (every node) |
+| `--max-concurrent-fanout` | `PORTREACH_MAX_CONCURRENT_FANOUT` | `0` | bound concurrent per-check agent requests; `0` = unlimited |
 | `--auth-config` | `PORTREACH_AUTH_CONFIG` | | SSO auth config YAML; empty = auth disabled |
 | `--ui-title` / `--ui-description` / `--ui-footer` | `PORTREACH_UI_*` | | trusted HTML branding for the main page |
 | `--login-title` / `--login-header` / `--login-footer` | `PORTREACH_LOGIN_*` | | trusted HTML branding for login/denied pages |

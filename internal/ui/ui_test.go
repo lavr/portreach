@@ -57,7 +57,7 @@ func TestCheckAllMixed(t *testing.T) {
 	defer failAgent.Close()
 
 	agents := []discovery.Agent{{Addr: addr(okAgent)}, {Addr: addr(failAgent)}}
-	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "")
+	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "", 0)
 
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
@@ -98,7 +98,7 @@ func TestCheckAllPartialFailure(t *testing.T) {
 		{Addr: addr(errAgent)},
 		{Addr: deadAddr},
 	}
-	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "")
+	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "", 0)
 
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3", len(results))
@@ -127,7 +127,7 @@ func TestCheckAllTimeout(t *testing.T) {
 
 	client := &http.Client{Timeout: 100 * time.Millisecond}
 	agents := []discovery.Agent{{Addr: addr(slow)}}
-	results := CheckAll(context.Background(), client, agents, Target{Host: "example", Port: 80}, "")
+	results := CheckAll(context.Background(), client, agents, Target{Host: "example", Port: 80}, "", 0)
 
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
@@ -144,7 +144,7 @@ func TestCheckAllTimeout(t *testing.T) {
 }
 
 func TestCheckAllEmpty(t *testing.T) {
-	results := CheckAll(context.Background(), newClient(), nil, Target{Host: "x", Port: 80}, "")
+	results := CheckAll(context.Background(), newClient(), nil, Target{Host: "x", Port: 80}, "", 0)
 	if len(results) != 0 {
 		t.Fatalf("got %d results, want 0", len(results))
 	}
@@ -159,7 +159,7 @@ func TestCheckAllDecodeError(t *testing.T) {
 	}))
 	defer bad.Close()
 
-	results := CheckAll(context.Background(), newClient(), []discovery.Agent{{Addr: addr(bad)}}, Target{Host: "x", Port: 80}, "")
+	results := CheckAll(context.Background(), newClient(), []discovery.Agent{{Addr: addr(bad)}}, Target{Host: "x", Port: 80}, "", 0)
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
@@ -188,7 +188,7 @@ func TestCheckAllAttachesAgentToken(t *testing.T) {
 	defer srv.Close()
 
 	agents := []discovery.Agent{{Addr: addr(srv)}}
-	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "s3cret")
+	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "s3cret", 0)
 	if got != "Bearer s3cret" {
 		t.Errorf("Authorization = %q, want %q", got, "Bearer s3cret")
 	}
@@ -200,7 +200,7 @@ func TestCheckAllNoTokenNoHeader(t *testing.T) {
 	defer srv.Close()
 
 	agents := []discovery.Agent{{Addr: addr(srv)}}
-	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "")
+	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "", 0)
 	if got != "" {
 		t.Errorf("Authorization = %q, want empty (no header)", got)
 	}

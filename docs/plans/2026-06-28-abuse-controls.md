@@ -161,26 +161,26 @@ backward-compatible (off/unlimited by default), while the metadata guard is an
 - [x] run tests — must pass before Task 3
 
 ### Task 3: Bound the per-check fan-out
-- [ ] add `maxAgentsPerCheck` (config, **default `0` = unlimited**, #R4) and a worker
+- [x] add `maxAgentsPerCheck` (config, **default `0` = unlimited**, #R4) and a worker
       pool to `CheckAll` (`internal/ui/aggregator.go`)
-- [ ] **`maxConcurrentFanout` default + validation (Medium)**: define `0`/unset =
+- [x] **`maxConcurrentFanout` default + validation (Medium)**: define `0`/unset =
       **unlimited concurrency** (today's goroutine-per-agent, no pool — preserves current
       behaviour); `> 0` = bounded pool of that size; **reject negative** in
       `Config.Validate()`. Never spawn a zero-worker pool (would hang)
-- [ ] when `maxAgentsPerCheck > 0` and discovery returns more agents than the cap,
+- [x] when `maxAgentsPerCheck > 0` and discovery returns more agents than the cap,
       **sort agents deterministically by `Addr`** (`discovery.Agent` has no `Node`
       pre-request), query the first N — no silent truncation
-- [ ] **explicit response contract (Medium)**: today `Summary.Total = len(results)`
+- [x] **explicit response contract (Medium)**: today `Summary.Total = len(results)`
       (`aggregator.go:119`) — after a cap that would silently become the *queried* count.
       Add explicit `discovered` / `queried` / `dropped` counts to the response (and
       define `Summary.Total` = queried), so partial results are unambiguous; mirror in the
       audit event
-- [ ] update README/docs wording so the "from every node" promise notes the optional cap
-- [ ] write tests: default `0` queries all (compat); `maxConcurrentFanout` 0/unset =
+- [x] update README/docs wording so the "from every node" promise notes the optional cap
+- [x] write tests: default `0` queries all (compat); `maxConcurrentFanout` 0/unset =
       unlimited, `> 0` bounds concurrency, **negative rejected by Validate**; cap enforced
       with **stable selection**; **`discovered`/`queried`/`dropped` correct** under and
       over the cap
-- [ ] run tests — must pass before Task 4
+- [x] run tests — must pass before Task 4
 
 ### Task 4: Default-deny cloud metadata (connect-time guard, not policy-mode)
 - [ ] **define the probe↔agent contract first (#R5)**: `probe.Run` returns only a

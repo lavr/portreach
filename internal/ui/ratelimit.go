@@ -80,6 +80,21 @@ func (s *Server) logThrottle(r *http.Request, idKey, targetKey string, retryAfte
 	)
 }
 
+// logDrop emits a structured "fanout_drop" audit event when a MaxAgentsPerCheck
+// cap truncates the fan-out, mirroring the check/throttle who/target/remote shape
+// so partial-coverage checks are visible in the same ИБ log pipeline (a broad
+// scan that repeatedly trips the cap is then auditable).
+func (s *Server) logDrop(r *http.Request, target Target, discovered, queried, dropped int) {
+	s.auditLogger().LogAttrs(r.Context(), slog.LevelWarn, "audit",
+		slog.String("event", "fanout_drop"),
+		slog.String("target", net.JoinHostPort(target.Host, strconv.Itoa(target.Port))),
+		slog.String("remote", r.RemoteAddr),
+		slog.Int("discovered", discovered),
+		slog.Int("queried", queried),
+		slog.Int("dropped", dropped),
+	)
+}
+
 // retryAfterSeconds renders a Retry-After header value: whole seconds rounded up,
 // floored at 1 so a sub-second hint never serializes as "0" (which clients read
 // as "retry immediately", defeating the throttle).
