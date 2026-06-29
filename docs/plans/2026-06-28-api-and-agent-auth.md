@@ -253,10 +253,10 @@ plane. Two boundaries, both backward compatible (unset → today's behaviour):
 - [x] run `go test ./...` — no regression
 
 ### Task 7: Verify acceptance criteria
-- [ ] both boundaries enforced; both default-off paths backward compatible
-- [ ] edge cases: expired/forged token, wrong/absent audience, **unmatched-issuer →
+- [x] both boundaries enforced; both default-off paths backward compatible
+- [x] edge cases: expired/forged token, wrong/absent audience, **unmatched-issuer →
       401**, missing agent token, `/metrics` gated, `/healthz` open
-- [ ] `go test ./... -v`, `go vet ./...`, `helm lint` clean; `internal/auth` ≥ 80%
+- [x] `go test ./... -v`, `go vet ./...`, `helm lint` clean; `internal/auth` ≥ 80%
 
 ### Task 8: [Final] Knowledge
 - [ ] note the dual cookie-or-bearer model, agent token, and `/metrics`/NP caveats in
