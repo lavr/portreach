@@ -73,9 +73,18 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
 - **Match the surrounding code.** This codebase favors small, well-commented
   functions; comments explain *why* (especially around timeouts, deadlines, and
   security trade-offs), not *what*. Keep that density.
+- **Go conventions**: define interfaces in the package that consumes them, not
+  beside their implementation; put `context.Context` first in every blocking or
+  cancellable function; defer cleanup immediately after acquiring files,
+  connections, contexts, or locks; keep changes focused — don't mix unrelated
+  cleanup or general improvements into a feature.
 - **Tests live next to code** as `*_test.go` and are **hermetic** — fake servers
   with `net/http/httptest`, never real network. New/changed behavior needs tests
   (success + error paths). Target ≥ 80% coverage on touched packages.
+- **Test isolation.** Tests never read or modify the real environment: filesystem
+  tests use `t.TempDir()`, environment variables are set via `t.Setenv`, and
+  nothing talks to a live cluster or external service. Test helpers call
+  `t.Helper()`.
 - **Dependencies are intentionally minimal.** The core started stdlib-only; the
   only external deps (`golang.org/x/oauth2`, `github.com/coreos/go-oidc/v3`,
   `golang.org/x/text`, `gopkg.in/yaml.v3`, `golang.org/x/time/rate` for the rate
@@ -113,6 +122,8 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
     Prometheus); `/healthz` is always open. NetworkPolicy is best-effort only and
     frequently unenforced under `hostNetwork` — don't rely on it instead of the token.
     Don't put OIDC/SSO on the agent; the shared token is the design.
+- **Commits**: no `Co-Authored-By` trailer and no AI-attribution lines in commit
+  messages or PR descriptions.
 
 ## Helm chart
 
