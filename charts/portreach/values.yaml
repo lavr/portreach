@@ -36,6 +36,17 @@ ui:
   extraEnv: []
   envFrom: []
 
+  # Checks this UI offers, rendered as --enabled-checks. Default tcp-only; add
+  # "postgres" to enable the credentialed PostgreSQL check (which also requires
+  # agent.auth to be set — see the render-time validation). Every check listed
+  # here must also be in agent.enabledChecks.
+  enabledChecks:
+    - tcp
+  # Disable the built-in postgres-specific rate limiter (auto-on with the
+  # postgres check: per-user 6/min burst 3, per-target 12/min burst 3, global
+  # 60/min burst 10). It layers on top of rateLimit above, not a replacement.
+  disablePostgresRateLimit: false
+
   branding:
     title: null
     description: null
@@ -216,6 +227,16 @@ agent:
   extraArgs: []
   extraEnv: []
   envFrom: []
+
+  # Checks this agent serves, rendered as --enabled-checks. Default tcp-only; a
+  # disabled check's endpoint is never registered (404). Enabling "postgres"
+  # requires agent.auth (a shared token) — see the render-time validation.
+  enabledChecks:
+    - tcp
+  # Disable the built-in postgres-specific rate limiter (auto-on with the
+  # postgres check: per-target 12/min burst 3, global 60/min burst 10). It
+  # layers on top of rateLimit below, not a replacement.
+  disablePostgresRateLimit: false
 
   targetPolicy:
     allow: ""

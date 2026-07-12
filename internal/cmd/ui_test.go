@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/discovery"
 	"github.com/lavr/portreach/internal/ratelimit"
 	"github.com/lavr/portreach/internal/ui"
@@ -42,7 +44,7 @@ const validGitHubConfig = `auth:
 
 func TestBuildUIHandlerNoAuthConfig(t *testing.T) {
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, "", "", nil, ui.FanoutConfig{}, &out)
+	h, err := buildUIHandler(nil, time.Second, "", "", nil, ui.FanoutConfig{}, checkapi.EnabledChecks{}, false, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,11 +58,31 @@ func TestBuildUIHandlerNoAuthConfig(t *testing.T) {
 	}
 }
 
+// TestBuildUIHandlerHealthzUnaffectedByEnabledChecks confirms /healthz stays
+// public regardless of --enabled-checks (Task 5 requirement: the allowlist
+// governs check endpoints only, never /healthz or /metrics).
+func TestBuildUIHandlerHealthzUnaffectedByEnabledChecks(t *testing.T) {
+	postgresOnly, err := checkapi.ParseEnabledChecks("postgres")
+	if err != nil {
+		t.Fatalf("ParseEnabledChecks: %v", err)
+	}
+	var out bytes.Buffer
+	h, err := buildUIHandler(nil, time.Second, "", "some-token", nil, ui.FanoutConfig{}, postgresOnly, false, &out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200 regardless of enabled-checks", rec.Code)
+	}
+}
+
 func TestBuildUIHandlerDisabledConfigIsOpen(t *testing.T) {
 	// A config file with no providers is valid and leaves the UI unauthenticated.
 	path := writeAuthConfig(t, "auth:\n  allowedUsers: []\n")
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, checkapi.EnabledChecks{}, false, &out)
 	if err != nil {
 		t.Fatalf("disabled config should not error: %v", err)
 	}
@@ -81,13 +103,13 @@ func TestBuildUIHandlerInvalidConfigErrors(t *testing.T) {
       type: github
       clientID: cid
 `)
-	if _, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &bytes.Buffer{}); err == nil {
+	if _, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, checkapi.EnabledChecks{}, false, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error for invalid (enabled) auth config")
 	}
 }
 
 func TestBuildUIHandlerMissingConfigFileErrors(t *testing.T) {
-	if _, err := buildUIHandler(nil, time.Second, "/no/such/auth.yaml", "", nil, ui.FanoutConfig{}, &bytes.Buffer{}); err == nil {
+	if _, err := buildUIHandler(nil, time.Second, "/no/such/auth.yaml", "", nil, ui.FanoutConfig{}, checkapi.EnabledChecks{}, false, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error for missing auth config file")
 	}
 }
@@ -95,7 +117,7 @@ func TestBuildUIHandlerMissingConfigFileErrors(t *testing.T) {
 func TestBuildUIHandlerEnabledGatesAndAnnounces(t *testing.T) {
 	path := writeAuthConfig(t, validGitHubConfig)
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, checkapi.EnabledChecks{}, false, &out)
 	if err != nil {
 		t.Fatalf("valid config should not error: %v", err)
 	}
@@ -136,7 +158,7 @@ func TestBuildUIHandlerAPIOnlyEnablesBearerGate(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
 			srv.URL, srv.URL+"/authorize", srv.URL+"/token", srv.URL+"/jwks")
 	})
 	srv = httptest.NewServer(mux)
@@ -144,7 +166,7 @@ func TestBuildUIHandlerAPIOnlyEnablesBearerGate(t *testing.T) {
 
 	path := writeAuthConfig(t, "auth:\n  api:\n    - id: ci\n      issuer: "+srv.URL+"\n      audience: portreach\n")
 	var out bytes.Buffer
-	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, &out)
+	h, err := buildUIHandler(nil, time.Second, path, "", nil, ui.FanoutConfig{}, checkapi.EnabledChecks{}, false, &out)
 	if err != nil {
 		t.Fatalf("bearer-only config should build: %v", err)
 	}
@@ -235,7 +257,8 @@ func TestRunUIInvalidRateConfigExits2(t *testing.T) {
 }
 
 // TestBuildUIHandlerWithLimiterThrottles proves a limiter passed through
-// buildUIHandler actually gates /api/check: the second same-client request 429s.
+// buildUIHandler actually gates /api/check/tcp: the second same-client request
+// 429s.
 func TestBuildUIHandlerWithLimiterThrottles(t *testing.T) {
 	lim, err := ratelimit.New(ratelimit.Config{
 		Enabled: true,
@@ -244,13 +267,18 @@ func TestBuildUIHandlerWithLimiterThrottles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ratelimit.New: %v", err)
 	}
-	h, err := buildUIHandler(staticDisc{}, time.Second, "", "", lim, ui.FanoutConfig{}, &bytes.Buffer{})
+	tcpOnly, err := checkapi.ParseEnabledChecks("tcp")
+	if err != nil {
+		t.Fatalf("ParseEnabledChecks: %v", err)
+	}
+	h, err := buildUIHandler(staticDisc{}, time.Second, "", "", lim, ui.FanoutConfig{}, tcpOnly, false, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("buildUIHandler: %v", err)
 	}
 
 	do := func() int {
-		req := httptest.NewRequest(http.MethodGet, "/api/check?host=example&port=80", nil)
+		body, _ := json.Marshal(checkapi.TCPCheckRequest{Host: "example", Port: 80})
+		req := httptest.NewRequest(http.MethodPost, "/api/check/tcp", bytes.NewReader(body))
 		req.RemoteAddr = "192.0.2.1:1234"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)

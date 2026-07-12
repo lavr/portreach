@@ -3,11 +3,13 @@ package cmd
 import (
 	"errors"
 	"flag"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/lavr/portreach/internal/agent"
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/ratelimit"
 )
 
@@ -25,6 +27,8 @@ func runAgent(args []string, deps Deps) error {
 	rateTargetBurst := fs.Int("rate-target-burst", envInt("PORTREACH_RATE_TARGET_BURST", 0), "per-target bucket capacity (env PORTREACH_RATE_TARGET_BURST)")
 	rateGlobalRate := fs.Float64("rate-global-rate", envFloat("PORTREACH_RATE_GLOBAL_RATE", 0), "process-wide tokens/sec; 0 disables (env PORTREACH_RATE_GLOBAL_RATE)")
 	rateGlobalBurst := fs.Int("rate-global-burst", envInt("PORTREACH_RATE_GLOBAL_BURST", 0), "process-wide bucket capacity (env PORTREACH_RATE_GLOBAL_BURST)")
+	enabledChecksFlag := fs.String("enabled-checks", envString("PORTREACH_ENABLED_CHECKS", checkapi.DefaultEnabledChecks), "comma-separated checks this agent serves: tcp, postgres (env PORTREACH_ENABLED_CHECKS)")
+	disablePostgresRateLimit := fs.Bool("disable-postgres-rate-limit", envBool("PORTREACH_AGENT_DISABLE_POSTGRES_RATE_LIMIT", false), "disable the built-in postgres-specific rate limiter (auto-on with the postgres check: per-target 12/min burst 3, global 60/min burst 10); it layers on top of --rate-limit, not a replacement for it (env PORTREACH_AGENT_DISABLE_POSTGRES_RATE_LIMIT)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // -h/--help: flag already printed usage, exit cleanly
@@ -34,6 +38,24 @@ func runAgent(args []string, deps Deps) error {
 
 	policy, err := agent.ParsePolicy(*allow, *deny)
 	if err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+
+	enabledChecks, err := checkapi.ParseEnabledChecks(*enabledChecksFlag)
+	if err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+	// Routing (Handler) registers a check endpoint per enabledChecks.Has(name),
+	// so a blank/empty set would silently come up serving no check endpoint at
+	// all — almost certainly a configuration mistake, not an intentional
+	// deployment. Fail fast rather than let it through.
+	if err := enabledChecks.RequireNonEmpty(); err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+	// Fail closed: postgres checks accept a username/password and forward them to
+	// a dialed-out server, so serving them without a shared token would let
+	// anyone on the network run authenticated probes through this agent for free.
+	if err := enabledChecks.RequireTokenForPostgres(*authToken, "--auth-token", "PORTREACH_AGENT_TOKEN"); err != nil {
 		return &ExitError{Code: 2, Err: err}
 	}
 
@@ -53,9 +75,14 @@ func runAgent(args []string, deps Deps) error {
 		}
 	}
 
+	// Structured JSON audit logger for the postgres check trail (matches the UI's
+	// audit pipeline in ui.go). Without this the agent falls back to slog.Default
+	// (text to stderr); wiring it here makes the audit output structured JSON.
+	logger := slog.New(slog.NewJSONHandler(deps.Stdout, nil))
+
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           agent.New("", policy, agent.WithToken(*authToken), agent.WithMetricsPublic(*metricsPublic), agent.WithAllowMetadata(*allowMetadata), agent.WithLimiter(limiter)).Handler(),
+		Handler:           agent.New("", policy, agent.WithToken(*authToken), agent.WithMetricsPublic(*metricsPublic), agent.WithAllowMetadata(*allowMetadata), agent.WithLimiter(limiter), agent.WithEnabledChecks(enabledChecks), agent.WithDisablePostgresRateLimit(*disablePostgresRateLimit), agent.WithLogger(logger)).Handler(),
 		ReadHeaderTimeout: 10 * time.Second, // bound slow-header (Slowloris) clients
 	}
 	return serveWithShutdown(srv, deps)

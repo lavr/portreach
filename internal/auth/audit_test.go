@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -50,11 +51,18 @@ func wantField(t *testing.T, ev map[string]any, key, want string) {
 	}
 }
 
-func TestAuditCheckAPIAnonymous(t *testing.T) {
+// jsonReq builds a POST request with a JSON body and the JSON content type.
+func jsonReq(path, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestAuditCheckTCPPostAnonymous(t *testing.T) {
 	logger, decode := captureLogger()
 	h := AuditCheck(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
-	req := httptest.NewRequest(http.MethodGet, apiCheckPath+"?host=db.internal&port=5432&proto=tcp", nil)
+	req := jsonReq(apiCheckTCPPath, `{"host":"db.internal","port":5432,"timeout":"5s"}`)
 	req.RemoteAddr = "203.0.113.7:5555"
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -71,7 +79,7 @@ func TestAuditCheckCarriesIdentity(t *testing.T) {
 	logger, decode := captureLogger()
 	h := AuditCheck(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
-	req := httptest.NewRequest(http.MethodGet, apiCheckPath+"?host=svc&port=80", nil)
+	req := jsonReq(apiCheckTCPPath, `{"host":"svc","port":80}`)
 	req.RemoteAddr = "198.51.100.9:1234"
 	ctx := WithIdentity(req.Context(), Session{User: "alice", Provider: "gh"})
 	h.ServeHTTP(httptest.NewRecorder(), req.WithContext(ctx))
@@ -84,7 +92,36 @@ func TestAuditCheckCarriesIdentity(t *testing.T) {
 	wantField(t, ev, "remote", "198.51.100.9:1234")
 }
 
-func TestAuditCheckIndexOnlyOnSubmit(t *testing.T) {
+// TestAuditCheckPostgresNoPassword proves the postgres endpoint is audited with
+// the right proto and target, that the password never reaches the audit event,
+// and that the buffered body is restored so the downstream handler still reads
+// the full request (credentials intact).
+func TestAuditCheckPostgresNoPassword(t *testing.T) {
+	logger, decode := captureLogger()
+	const canary = "CANARY-pw-7f3"
+	var gotBody string
+	h := AuditCheck(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+	}))
+
+	body := `{"host":"pg.internal","port":5432,"credentials":{"username":"u","password":"` + canary + `"}}`
+	h.ServeHTTP(httptest.NewRecorder(), jsonReq(apiCheckPostgresPath, body))
+
+	ev := onlyEvent(t, decode(t))
+	wantField(t, ev, "event", "check")
+	wantField(t, ev, "target", "pg.internal:5432/postgres")
+	for k, v := range ev {
+		if s, ok := v.(string); ok && strings.Contains(s, canary) {
+			t.Errorf("password leaked into audit event field %q: %q", k, s)
+		}
+	}
+	if gotBody != body {
+		t.Errorf("handler saw body %q, want the original %q (body not restored)", gotBody, body)
+	}
+}
+
+func TestAuditCheckIndexGetOnlyOnSubmit(t *testing.T) {
 	logger, decode := captureLogger()
 	h := AuditCheck(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
@@ -94,12 +131,29 @@ func TestAuditCheckIndexOnlyOnSubmit(t *testing.T) {
 		t.Fatalf("bare / emitted %d events, want 0: %v", len(events), events)
 	}
 
-	// "/" with a submitted target emits a check event.
-	req := httptest.NewRequest(http.MethodGet, indexPath+"?host=h&port=22&proto=tcp", nil)
-	h.ServeHTTP(httptest.NewRecorder(), req)
+	// A shareable "/" GET link with a target still emits a check event.
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, indexPath+"?host=h&port=22&proto=tcp", nil))
 	ev := onlyEvent(t, decode(t))
 	wantField(t, ev, "event", "check")
 	wantField(t, ev, "target", "h:22/tcp")
+}
+
+func TestAuditCheckFormPostPostgres(t *testing.T) {
+	logger, decode := captureLogger()
+	h := AuditCheck(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	form := "check=postgres&host=pg&port=5432&username=u&password=secret"
+	req := httptest.NewRequest(http.MethodPost, indexPath, strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	ev := onlyEvent(t, decode(t))
+	wantField(t, ev, "target", "pg:5432/postgres")
+	for k, v := range ev {
+		if s, ok := v.(string); ok && strings.Contains(s, "secret") {
+			t.Errorf("password leaked into audit event field %q: %q", k, s)
+		}
+	}
 }
 
 func TestAuditCheckIgnoresHealthz(t *testing.T) {
@@ -116,18 +170,16 @@ func TestAuditCheckDefaultProtoTCP(t *testing.T) {
 	logger, decode := captureLogger()
 	h := AuditCheck(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
-	req := httptest.NewRequest(http.MethodGet, apiCheckPath+"?host=h&port=53", nil)
-	h.ServeHTTP(httptest.NewRecorder(), req)
+	h.ServeHTTP(httptest.NewRecorder(), jsonReq(apiCheckTCPPath, `{"host":"h","port":53}`))
 	ev := onlyEvent(t, decode(t))
 	wantField(t, ev, "target", "h:53/tcp")
 }
 
 func TestAuditCheckNilLoggerDoesNotPanic(t *testing.T) {
-	h := AuditCheck(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	// slog.Default() is used; just assert no panic and next runs.
 	called := false
-	h = AuditCheck(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, apiCheckPath+"?host=h&port=1", nil))
+	h := AuditCheck(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	h.ServeHTTP(httptest.NewRecorder(), jsonReq(apiCheckTCPPath, `{"host":"h","port":1}`))
 	if !called {
 		t.Fatal("next handler not called")
 	}

@@ -1,9 +1,14 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -13,10 +18,19 @@ import (
 const anonymousUser = "anonymous"
 
 // Audit paths the check audit middleware attributes a reachability check to.
+// The per-protocol POST endpoints each map to a fixed proto; the web form (/)
+// carries the proto in its input (query for a GET link, body for a POST).
 const (
-	apiCheckPath = "/api/check"
-	indexPath    = "/"
+	apiCheckTCPPath      = "/api/check/tcp"
+	apiCheckPostgresPath = "/api/check/postgres"
+	indexPath            = "/"
 )
+
+// maxAuditBodyPeek bounds how much of a POST body the audit middleware buffers
+// to extract the target. It is a small cap: the handlers enforce their own
+// (larger) body limit, and a check request's routing fields are tiny — this
+// only needs host/port/proto, never the credentials.
+const maxAuditBodyPeek = 64 << 10
 
 // Option customises an Authenticator at construction time.
 type Option func(*Authenticator)
@@ -88,25 +102,90 @@ func AuditCheck(logger *slog.Logger, next http.Handler) http.Handler {
 }
 
 // auditTarget reports whether r is a reachability check and, if so, the
-// target rendered as host:port/proto for the audit log. /api/check always
-// counts; / counts only when the form carried a target (host or port present).
+// target rendered as host:port/proto for the audit log. The per-protocol POST
+// endpoints always count (proto fixed by the path); / counts only when the
+// form carried a target (host or port present). For a POST the routing fields
+// come from the body (JSON for the API, form for /); the body is buffered and
+// restored so the downstream handler still reads it. The password is never
+// touched — only host/port/proto are extracted.
 func auditTarget(r *http.Request) (string, bool) {
 	switch r.URL.Path {
-	case apiCheckPath:
+	case apiCheckTCPPath:
+		host, port, _ := checkFields(r)
+		return host + ":" + port + "/tcp", true
+	case apiCheckPostgresPath:
+		host, port, _ := checkFields(r)
+		return host + ":" + port + "/postgres", true
 	case indexPath:
-		q := r.URL.Query()
-		if !q.Has("host") && !q.Has("port") {
+		host, port, proto := checkFields(r)
+		if host == "" && port == "" {
 			return "", false
 		}
+		if proto == "" {
+			proto = "tcp"
+		}
+		return host + ":" + port + "/" + proto, true
 	default:
 		return "", false
 	}
-	q := r.URL.Query()
-	host := strings.TrimSpace(q.Get("host"))
-	port := strings.TrimSpace(q.Get("port"))
-	proto := strings.TrimSpace(q.Get("proto"))
-	if proto == "" {
-		proto = "tcp"
+}
+
+// checkFields extracts the host/port/proto routing fields from a check request,
+// from the query string for a GET and from the body for a POST (JSON body for
+// the API endpoints, form-encoded for the web form). For a POST the body is
+// buffered under a small cap and restored, so this peek is transparent to the
+// handler. Only routing fields are read; credentials are never parsed here.
+func checkFields(r *http.Request) (host, port, proto string) {
+	if r.Method != http.MethodPost {
+		q := r.URL.Query()
+		return strings.TrimSpace(q.Get("host")), strings.TrimSpace(q.Get("port")), strings.TrimSpace(q.Get("proto"))
 	}
-	return host + ":" + port + "/" + proto, true
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAuditBodyPeek+1))
+	if err != nil {
+		return "", "", ""
+	}
+	// Restore the body for the handler regardless of what we can parse.
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+	if len(body) > maxAuditBodyPeek {
+		// Oversized for a routing peek; let the handler's own limit deal with it.
+		return "", "", ""
+	}
+
+	if ct := r.Header.Get("Content-Type"); strings.HasPrefix(ct, "application/json") {
+		var m struct {
+			Host string `json:"host"`
+			Port any    `json:"port"`
+		}
+		if json.Unmarshal(body, &m) == nil {
+			return strings.TrimSpace(m.Host), portString(m.Port), ""
+		}
+		return "", "", ""
+	}
+
+	// Form-encoded (the web form). ParseQuery over the buffered body avoids
+	// consuming r.PostForm state the handler may re-parse.
+	vals, err := url.ParseQuery(string(body))
+	if err != nil {
+		return "", "", ""
+	}
+	proto = strings.TrimSpace(vals.Get("proto"))
+	if strings.TrimSpace(vals.Get("check")) == "postgres" {
+		proto = "postgres"
+	}
+	return strings.TrimSpace(vals.Get("host")), strings.TrimSpace(vals.Get("port")), proto
+}
+
+// portString renders a JSON port value (number or string) as a trimmed string.
+func portString(v any) string {
+	switch p := v.(type) {
+	case float64:
+		return strconv.FormatInt(int64(p), 10)
+	case json.Number:
+		return p.String()
+	case string:
+		return strings.TrimSpace(p)
+	default:
+		return ""
+	}
 }

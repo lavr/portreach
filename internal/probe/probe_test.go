@@ -6,10 +6,28 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lavr/portreach/internal/checkapi"
 )
+
+// TestCheckAPITimeoutBoundsMatch pins internal/checkapi's timeout constants to
+// this package's: checkapi deliberately redefines them (see its doc comments) so
+// its non-test code stays independent, and this test turns "values must match"
+// into an enforced invariant. It lives here rather than in checkapi's own tests
+// because internal/probe now imports internal/checkapi (for Result.Auth), so the
+// reverse import a checkapi-side test would need is an import cycle.
+func TestCheckAPITimeoutBoundsMatch(t *testing.T) {
+	if checkapi.DefaultTimeout != DefaultTimeout {
+		t.Fatalf("checkapi.DefaultTimeout = %v, probe.DefaultTimeout = %v; the bounds must match", checkapi.DefaultTimeout, DefaultTimeout)
+	}
+	if checkapi.MaxTimeout != MaxTimeout {
+		t.Fatalf("checkapi.MaxTimeout = %v, probe.MaxTimeout = %v; the bounds must match", checkapi.MaxTimeout, MaxTimeout)
+	}
+}
 
 // countingListener listens on network/addr and counts accepted connections, so a
 // test can prove the connect guard refused a denied address before any TCP
@@ -149,6 +167,160 @@ func TestResultJSONNoNewKeysWhenNotDenied(t *testing.T) {
 	if !strings.Contains(string(db), `"denied":true`) || !strings.Contains(string(db), `"denied_reason"`) {
 		t.Errorf("denied response must carry both keys, got %s", db)
 	}
+}
+
+// holdingListener accepts connections and keeps each one open, spawning a reader
+// per conn that unblocks (and marks the conn peer-closed) when the client end
+// closes. The probe never writes to a reachability conn, so a server-side Read
+// returns only when the peer closes — letting a test observe exactly which dialed
+// connections the dial layer closed and which single winner it left open.
+type holdingListener struct {
+	ln     net.Listener
+	mu     sync.Mutex
+	total  int // connections accepted
+	closed int // connections whose peer (the dialer) closed them
+}
+
+func newHoldingListener(t *testing.T, network, addr string) *holdingListener {
+	t.Helper()
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		t.Skipf("listen %s %s: %v", network, addr, err)
+	}
+	hl := &holdingListener{ln: ln}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			hl.mu.Lock()
+			hl.total++
+			hl.mu.Unlock()
+			go func(c net.Conn) {
+				// Blocks until the dialer closes its end (Read returns EOF/err),
+				// which is exactly what "the dial layer closed this loser" looks
+				// like from the server side.
+				_, _ = c.Read(make([]byte, 1))
+				hl.mu.Lock()
+				hl.closed++
+				hl.mu.Unlock()
+			}(c)
+		}
+	}()
+	return hl
+}
+
+func (hl *holdingListener) counts() (total, closed int) {
+	hl.mu.Lock()
+	defer hl.mu.Unlock()
+	return hl.total, hl.closed
+}
+
+// TestDialConnClosesLosersKeepsWinnerOpen exercises the conn-ownership contract of
+// the shared dial layer directly: two live addresses (127.0.0.1 and ::1) on the
+// same port both connect, dialConn returns exactly one still-open winner, and the
+// other connection — a loser — is closed by the dial layer. The winner is held
+// open by the test (as a protocol runner would while handshaking), so across both
+// listeners exactly one accepted connection must remain open and every other one
+// must be peer-closed. This holds whether the loser connected and was closed, or
+// was cancelled before it connected (then only the winner was ever accepted).
+func TestDialConnClosesLosersKeepsWinnerOpen(t *testing.T) {
+	v4 := newHoldingListener(t, "tcp", "127.0.0.1:0")
+	defer v4.ln.Close() //nolint:errcheck // best-effort close
+	port := v4.ln.Addr().(*net.TCPAddr).Port
+
+	// Bind ::1 on the same port so both addresses are dialable at the one port
+	// dialConn uses for every host; distinct IPs can share a port number.
+	v6 := newHoldingListener(t, "tcp6", "[::1]:"+strconv.Itoa(port))
+	defer v6.ln.Close() //nolint:errcheck // best-effort close
+
+	dr, conn, srcIP, guardHit := dialConn(context.Background(), []string{"127.0.0.1", "::1"}, port, nil)
+	if dr == nil || !dr.OK {
+		t.Fatalf("expected a successful dial, got %+v", dr)
+	}
+	if conn == nil {
+		t.Fatal("expected a non-nil winning conn handed back open")
+	}
+	defer conn.Close() //nolint:errcheck // best-effort close
+	if guardHit {
+		t.Errorf("no guard configured, guardHit must be false")
+	}
+	if srcIP == "" {
+		t.Errorf("expected a source IP read from the still-open winner")
+	}
+
+	// The winner is held open (never written to, so its listener never sees a
+	// close); any loser was closed synchronously inside dialConn before it
+	// returned, so the peer-close observation lands within a short poll.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		total := 0
+		open := 0
+		for _, hl := range []*holdingListener{v4, v6} {
+			tot, cl := hl.counts()
+			total += tot
+			open += tot - cl
+		}
+		if total >= 1 && open == 1 {
+			break // exactly one conn (the winner) still open, all others closed
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected exactly one open conn (the winner); v4=%v v6=%v", mustCounts(v4), mustCounts(v6))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func mustCounts(hl *holdingListener) [2]int {
+	t, c := hl.counts()
+	return [2]int{t, c}
+}
+
+// TestTCPRunnerOmitsAuth proves the TCP runner never sets Result.Auth and that a
+// TCP response therefore serializes without an "auth" key — keeping it
+// byte-identical to before the field was added for the protocol runners.
+func TestTCPRunnerOmitsAuth(t *testing.T) {
+	ln, port := listenLocal(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	res := Run(context.Background(), "127.0.0.1", []string{"127.0.0.1"}, port, "tcp", 2*time.Second, nil, nil)
+	if res.Auth != nil {
+		t.Errorf("TCP runner must never set Auth, got %+v", res.Auth)
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "auth") {
+		t.Errorf("TCP response must not contain an auth key, got %s", b)
+	}
+}
+
+// TestDialConnManyGuardedRaceClean drives dialConn with far more addresses than
+// maxConcurrentDials, mixing guard-denied and reachable addresses, to exercise the
+// concurrent guard atomic and the conn hand-off/close paths together. Its value is
+// under `go test -race`: the shared guardHit flag and the winner/loser conn
+// handling run across the whole worker pool at once.
+func TestDialConnManyGuardedRaceClean(t *testing.T) {
+	ln, port := listenLocal(t)
+	defer ln.Close() //nolint:errcheck // best-effort close
+
+	// 127.0.0.2+ are guard-denied blackholes; 127.0.0.1 is the reachable winner.
+	guard := NewDenyGuard([]*net.IPNet{mustCIDR(t, "127.0.0.2/31"), mustCIDR(t, "127.0.0.4/30")})
+	hosts := []string{"127.0.0.1"}
+	for i := 0; i < maxConcurrentDials*3; i++ {
+		hosts = append(hosts, "127.0.0."+strconv.Itoa(i+2))
+	}
+
+	dr, conn, _, _ := dialConn(context.Background(), hosts, port, guard)
+	if dr == nil || !dr.OK {
+		t.Fatalf("expected the reachable address to connect, got %+v", dr)
+	}
+	if conn == nil {
+		t.Fatal("expected a winning conn")
+	}
+	_ = conn.Close()
 }
 
 // listenLocal opens a TCP listener on 127.0.0.1 and returns it with its port.
