@@ -33,6 +33,11 @@
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "timeout": { "type": "string", "minLength": 1 },
+        "enabledChecks": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["tcp", "postgres"] }
+        },
+        "disablePostgresRateLimit": { "type": "boolean" },
         "agentDiscovery": {
           "type": "object",
           "properties": {
@@ -163,6 +168,11 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "enabledChecks": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["tcp", "postgres"] }
+        },
+        "disablePostgresRateLimit": { "type": "boolean" },
         "metricsPublic": { "type": "boolean" },
         "auth": {
           "type": "object",

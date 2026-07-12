@@ -1,0 +1,7 @@
+{{/*
+Render-time validation of the enabled-checks wiring. This template produces no
+manifest output; it exists so portreach.validateChecks runs unconditionally on
+every `helm template`/`helm install`, independent of whether the UI or agent
+workloads themselves are enabled.
+*/}}
+{{- include "portreach.validateChecks" . -}}

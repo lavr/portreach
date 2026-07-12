@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lavr/portreach/internal/auth"
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/ratelimit"
 )
 
@@ -32,24 +33,18 @@ func newLimiter(t *testing.T, cfg ratelimit.Config) *ratelimit.Limiter {
 func TestAPICheckRateLimited(t *testing.T) {
 	// One token per identity; the second request from the same client is denied.
 	lim := newLimiter(t, ratelimit.Config{User: ratelimit.Scope{Rate: 1, Burst: 1}})
-	srv := httptest.NewServer(New(staticList{}, time.Second, WithLimiter(lim)).Handler())
+	srv := httptest.NewServer(New(staticList{}, time.Second, WithLimiter(lim), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
 	// First request: under limit → 200.
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("first request status = %d, want 200", resp.StatusCode)
 	}
 
 	// Second request from the same client: over limit → 429 + Retry-After.
-	resp, err = http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp = postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("second request status = %d, want 429", resp.StatusCode)
@@ -69,14 +64,11 @@ func TestAPICheckRateLimited(t *testing.T) {
 func TestAPICheckUnderLimitPasses(t *testing.T) {
 	// Burst of 3 admits three requests from the same client before throttling.
 	lim := newLimiter(t, ratelimit.Config{User: ratelimit.Scope{Rate: 1, Burst: 3}})
-	srv := httptest.NewServer(New(staticList{}, time.Second, WithLimiter(lim)).Handler())
+	srv := httptest.NewServer(New(staticList{}, time.Second, WithLimiter(lim), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
 	for i := 0; i < 3; i++ {
-		resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-		if err != nil {
-			t.Fatalf("GET %d: %v", i, err)
-		}
+		resp := postTCPCheck(t, srv.URL, "example", 80)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d status = %d, want 200", i, resp.StatusCode)
@@ -86,14 +78,11 @@ func TestAPICheckUnderLimitPasses(t *testing.T) {
 
 func TestAPICheckDisabledUnlimited(t *testing.T) {
 	// A nil limiter (default) never throttles, even on many rapid requests.
-	srv := httptest.NewServer(New(staticList{}, time.Second).Handler())
+	srv := httptest.NewServer(New(staticList{}, time.Second, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
 	for i := 0; i < 5; i++ {
-		resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-		if err != nil {
-			t.Fatalf("GET %d: %v", i, err)
-		}
+		resp := postTCPCheck(t, srv.URL, "example", 80)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d status = %d, want 200 (unlimited)", i, resp.StatusCode)
@@ -105,26 +94,23 @@ func TestAPICheckDisabledUnlimited(t *testing.T) {
 // per-target burst for one host:port does not throttle a different target.
 func TestPerTargetIsolation(t *testing.T) {
 	lim := newLimiter(t, ratelimit.Config{Target: ratelimit.Scope{Rate: 1, Burst: 1}})
-	srv := httptest.NewServer(New(staticList{}, time.Second, WithLimiter(lim)).Handler())
+	srv := httptest.NewServer(New(staticList{}, time.Second, WithLimiter(lim), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	get := func(path string) int {
-		resp, err := http.Get(srv.URL + path)
-		if err != nil {
-			t.Fatalf("GET %s: %v", path, err)
-		}
+	check := func(host string) int {
+		resp := postTCPCheck(t, srv.URL, host, 80)
 		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
 
-	if code := get("/api/check?host=a&port=80"); code != http.StatusOK {
+	if code := check("a"); code != http.StatusOK {
 		t.Fatalf("first target-a = %d, want 200", code)
 	}
-	if code := get("/api/check?host=a&port=80"); code != http.StatusTooManyRequests {
+	if code := check("a"); code != http.StatusTooManyRequests {
 		t.Fatalf("second target-a = %d, want 429", code)
 	}
 	// A different target is unaffected.
-	if code := get("/api/check?host=b&port=80"); code != http.StatusOK {
+	if code := check("b"); code != http.StatusOK {
 		t.Fatalf("target-b = %d, want 200 (isolated)", code)
 	}
 }
@@ -167,10 +153,10 @@ func TestClientIPKeyingTrustedProxy(t *testing.T) {
 		User:           ratelimit.Scope{Rate: 1, Burst: 1},
 		TrustedProxies: []string{"10.0.0.1"},
 	})
-	h := New(staticList{}, time.Second, WithLimiter(lim)).Handler()
+	h := New(staticList{}, time.Second, WithLimiter(lim), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler()
 
 	do := func(remote, xff string) int {
-		req := httptest.NewRequest(http.MethodGet, "/api/check?host=example&port=80", nil)
+		req := newPostRequest(t, "/api/check/tcp", checkapi.TCPCheckRequest{Host: "example", Port: 80})
 		req.RemoteAddr = remote
 		if xff != "" {
 			req.Header.Set("X-Forwarded-For", xff)
@@ -197,10 +183,10 @@ func TestClientIPKeyingUntrustedProxyIgnoresHeader(t *testing.T) {
 		User:           ratelimit.Scope{Rate: 1, Burst: 1},
 		TrustedProxies: []string{"10.0.0.1"},
 	})
-	h := New(staticList{}, time.Second, WithLimiter(lim)).Handler()
+	h := New(staticList{}, time.Second, WithLimiter(lim), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler()
 
 	do := func(remote, xff string) int {
-		req := httptest.NewRequest(http.MethodGet, "/api/check?host=example&port=80", nil)
+		req := newPostRequest(t, "/api/check/tcp", checkapi.TCPCheckRequest{Host: "example", Port: 80})
 		req.RemoteAddr = remote
 		req.Header.Set("X-Forwarded-For", xff)
 		rec := httptest.NewRecorder()
@@ -224,10 +210,10 @@ func TestClientIPKeyingUntrustedProxyIgnoresHeader(t *testing.T) {
 // user share a bucket (second throttled), a different user is isolated.
 func TestIdentityKeyingAuthenticatedUser(t *testing.T) {
 	lim := newLimiter(t, ratelimit.Config{User: ratelimit.Scope{Rate: 1, Burst: 1}})
-	h := New(staticList{}, time.Second, WithLimiter(lim)).Handler()
+	h := New(staticList{}, time.Second, WithLimiter(lim), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler()
 
 	do := func(user string) int {
-		req := httptest.NewRequest(http.MethodGet, "/api/check?host=example&port=80", nil)
+		req := newPostRequest(t, "/api/check/tcp", checkapi.TCPCheckRequest{Host: "example", Port: 80})
 		req.RemoteAddr = "192.0.2.1:9999" // same IP for all → proves user keys, not IP
 		req = req.WithContext(auth.WithIdentity(req.Context(), auth.Session{User: user}))
 		rec := httptest.NewRecorder()

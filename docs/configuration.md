@@ -20,9 +20,11 @@ The probe server. Run one per point you want to check from.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen` | `:8732` | address to listen on |
+| `--enabled-checks` | `tcp` | comma-separated checks this agent serves: `tcp`, `postgres`. A disabled check's endpoint is not registered (404). Enabling `postgres` requires `--auth-token` (fail-closed at startup). |
 | `--allow` | *(empty)* | comma-separated allow CIDR list (empty = allow all) |
 | `--deny` | *(empty)* | comma-separated deny CIDR list (takes precedence over allow) |
-| `--auth-token` | *(empty)* | shared bearer token required on `/check` and `/metrics`; empty = open |
+| `--auth-token` | *(empty)* | shared bearer token required on `/api/check/*` and `/metrics`; empty = open (but **required** when `postgres` is enabled) |
+| `--disable-postgres-rate-limit` | `false` | disable the built-in postgres-specific limiter (auto-on with the postgres check: per-target 12/min burst 3, global 60/min burst 10); it layers on top of `--rate-limit` |
 | `--metrics-public` | `false` | leave `/metrics` open even when a token is set (`/check` stays gated) |
 | `--allow-metadata` | `false` | remove the built-in cloud-metadata/link-local connect guard (`169.254.0.0/16` + `fd00:ec2::254`); operator `--deny` still applies |
 | `--rate-limit` | `false` | enable the optional `/check` rate limiter (defence in depth for direct calls); off = unlimited |
@@ -35,7 +37,9 @@ Environment:
 
 | Variable | Description |
 |----------|-------------|
-| `NODE_NAME` | point name reported in `/check` responses; falls back to the OS hostname |
+| `NODE_NAME` | point name reported in check responses; falls back to the OS hostname |
+| `PORTREACH_ENABLED_CHECKS` | default for `--enabled-checks` |
+| `PORTREACH_AGENT_DISABLE_POSTGRES_RATE_LIMIT` | default for `--disable-postgres-rate-limit` |
 | `PORTREACH_AGENT_TOKEN` | default for `--auth-token` |
 | `PORTREACH_AGENT_METRICS_PUBLIC` | default for `--metrics-public` |
 | `PORTREACH_AGENT_ALLOW_METADATA` | default for `--allow-metadata` |
@@ -43,19 +47,28 @@ Environment:
 | `PORTREACH_RATE_TARGET_RATE` / `PORTREACH_RATE_TARGET_BURST` | defaults for the per-target scope |
 | `PORTREACH_RATE_GLOBAL_RATE` / `PORTREACH_RATE_GLOBAL_BURST` | defaults for the global scope |
 
-Endpoints:
+Endpoints (each check is a **`POST`** with a JSON body; registered only when
+that check is in `--enabled-checks`):
 
-- `GET /check?host=&port=&proto=tcp&timeout=5s` → JSON probe result with a
-  `node` field. Returns `200` even when `tcp.ok` is `false` (the probe ran),
-  `400` on bad input, `403` when the target is denied by policy, and `429` +
-  `Retry-After` when the optional rate limiter throttles the request (see the
-  rate limiter section).
+- `POST /api/check/tcp` — body `{"host","port","timeout"}` → JSON probe result
+  with a `node` field.
+- `POST /api/check/postgres` — body adds `credentials` and `tls` (see
+  [PostgreSQL check](#postgresql-check)) → the same result plus an `auth` block.
 - `GET /healthz` → `{"status":"ok","node":"..."}`.
 - `GET /metrics` → Prometheus text: `portreach_checks_total{result="ok|fail|denied|bad_request|throttled"}`.
 
-`proto` is `tcp` only for now; `timeout` is a Go duration (default `5s`, capped
-at `30s` — larger values are silently clamped; non-positive values fall back to
-the default).
+> **Breaking change:** the old `GET /check?host=&port=&proto=&timeout=` endpoint
+> has been **removed** (no compatibility alias) in favour of the two POST
+> endpoints above — credentials belong in a request body, never a URL. A request
+> to `/check` now returns `404`.
+
+Status codes (both endpoints): `405` on a non-POST method; `400` on malformed
+JSON or invalid params; `401` on a missing/wrong `--auth-token`; `403` when the
+target is denied by policy or the metadata guard; `429` + `Retry-After` when a
+rate limiter throttles the request; **`200`** for a check that ran even if the
+target itself failed (TCP refused, auth rejected, TLS error — those are
+structured results, not HTTP errors). `timeout` is a Go duration (default `5s`,
+capped at `30s`; non-positive → default).
 
 ### Target policy (SSRF mitigation)
 
@@ -178,6 +191,8 @@ silent.
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
 | `--listen` | | `:8080` | address to listen on |
+| `--enabled-checks` | `PORTREACH_ENABLED_CHECKS` | `tcp` | comma-separated checks this UI offers: `tcp`, `postgres`. A disabled check's endpoint is not registered (404) and the web form hides it. Enabling `postgres` requires `--agent-token` (fail-closed at startup). |
+| `--disable-postgres-rate-limit` | `PORTREACH_UI_DISABLE_POSTGRES_RATE_LIMIT` | `false` | disable the built-in postgres-specific limiter (auto-on with the postgres check: per-user 6/min burst 3, per-target 12/min burst 3, global 60/min burst 10); layers on top of `--rate-limit` |
 | `--agents` | `PORTREACH_AGENTS` | | comma-separated static agent list `host[:port]` |
 | `--agents-dns` | `PORTREACH_AGENTS_DNS` | | headless service name to resolve agents from |
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | agent port for DNS-discovered and port-less agents |
@@ -218,12 +233,23 @@ get `--agent-port` appended.
 Endpoints:
 
 - `GET /` → HTML form; submitting it re-renders the page with the result table.
-- `GET /api/check?host=&port=&proto=&timeout=` → aggregated JSON
-  (`{target, agents:[...], discovered, queried, dropped, summary:{ok,total}}`).
+  The form POSTs (so a Postgres check's credentials never enter a URL) and runs
+  without JavaScript. It shows a check-type selector and the Postgres credential
+  fields only when `postgres` is enabled.
+- `POST /api/check/tcp` — JSON body `{"host","port","timeout"}`.
+- `POST /api/check/postgres` — body adds `credentials` and `tls` (see
+  [PostgreSQL check](#postgresql-check)).
+  Both return the aggregated JSON
+  (`{target, agents:[...], discovered, queried, dropped, summary:{ok,total}}`);
   `discovered`/`queried`/`dropped` make partial coverage explicit when
   `--max-agents-per-check` caps the fan-out; `summary.total` equals `queried`.
-  Over the rate limit the endpoint returns `429` + `Retry-After` instead.
+  Each is registered only when its check is enabled. Over the rate limit the
+  endpoint returns `429` + `Retry-After`.
 - `GET /healthz` → `{"status":"ok"}`.
+
+> **Breaking change:** the old `GET /api/check?…` endpoint has been **removed**
+> (no compatibility alias); use the two POST endpoints above. `/api/check` now
+> returns `404`.
 
 A single slow or unreachable agent does not fail the whole request: its row
 carries an `error` and the rest still report. The per-check budget is bounded by
@@ -289,6 +315,72 @@ or reverse proxy, `RemoteAddr` is the proxy and a raw `X-Forwarded-For` header i
 If portreach is exposed **directly** (no proxy), leave `--trusted-proxies` empty
 so `RemoteAddr` is always used. Set it to your proxy ranges **before** relying on
 per-IP limits, or prefer enabling auth for per-user keys.
+
+## PostgreSQL check
+
+An **optional** credentialed check that connects to a PostgreSQL server,
+authenticates, runs a fixed `SELECT 1`, and reports the outcome per vantage
+point alongside the DNS/TCP results. It is **off by default** — enable it with
+`--enabled-checks=tcp,postgres` on **both** the UI and every agent.
+
+Authentication is delegated to the `jackc/pgx` driver (`pgconn`), so
+SCRAM-SHA-256 and MD5 are supported and PostgreSQL protocol/CVE tracking is the
+driver's job, not ours. Mechanisms `pgconn` cannot complete offline
+(GSSAPI/SSPI) report `unsupported_auth`.
+
+Request body (`POST /api/check/postgres`, UI and agent):
+
+```json
+{
+  "host": "db.internal",
+  "port": 5432,
+  "timeout": "5s",
+  "credentials": {"username": "portreach", "password": "secret", "database": "postgres"},
+  "tls": {"enabled": true, "server_name": "db.internal", "insecure_skip_verify": false}
+}
+```
+
+- `credentials.username` and `credentials.password` are **required**;
+  `database` is optional (PostgreSQL defaults it to the username).
+- `tls` is optional. **TLS is on with certificate verification by default**
+  (omit the block, or send `{}`); `server_name` defaults to the requested host.
+  Set `"enabled": false` to disable TLS, or `"insecure_skip_verify": true` to
+  skip verification — both must be **explicit**.
+
+The result gains an `auth` block:
+
+```json
+{"auth": {"ok": true, "code": "", "reason": "", "server_version": "16.3", "ms": 12.4}}
+```
+
+`code` is empty on success, otherwise one of `auth_rejected`, `unsupported_auth`,
+`tls_error`, `protocol_error`, `query_failed`. A failed check is still HTTP
+`200` — the agent performed the check.
+
+### Security model
+
+- **Off by default; fail-closed to enable.** `postgres` must be in
+  `--enabled-checks`; when it is, the agent **requires** `--auth-token` and the
+  UI **requires** `--agent-token`, or the process exits with a config error. A
+  credentialed check is never sprayed at an unauthenticated agent.
+- **The password is never in a URL, a log, an error, a result, or the rendered
+  HTML.** It is read only from the size-limited JSON body (or the POST form),
+  used to authenticate, and discarded.
+- **Every postgres request is audited** (structured `postgres_check` event:
+  actor, target, username, outcome, safe reason — never the password).
+- **Dedicated rate limiter**, auto-on with the endpoint (disable only with
+  `--disable-postgres-rate-limit`), layered on top of `--rate-limit`. Defaults —
+  UI: per-user 6/min (burst 3), per-target 12/min (burst 3), global 60/min
+  (burst 10); agent: per-target 12/min (burst 3), global 60/min (burst 10).
+- **The metadata guard and operator allow/deny policy run before any
+  handshake** — a denied target never reaches PostgreSQL.
+
+> ⚠️ **The UI → agent hop is plain HTTP in this release.** The shared bearer
+> token *authorizes* the request but does **not** encrypt it, so the password
+> crosses that hop in cleartext. Only enable the postgres check on a trusted
+> network path (or a service-mesh/TLS-terminating layer) until native agent TLS
+> ships — see `docs/superpowers/specs/2026-07-12-agent-tls-design.md`. TLS from
+> the agent to PostgreSQL (the third hop) is on by default, as above.
 
 ## Discovery examples
 

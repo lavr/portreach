@@ -135,6 +135,93 @@ func TestRunAgentServeError(t *testing.T) {
 	assertExit(t, []string{"agent", "--listen=127.0.0.1:99999"}, 1)
 }
 
+func TestRunAgentEnabledChecksUnknownName(t *testing.T) {
+	assertExit(t, []string{"agent", "--enabled-checks=tcp,mysql"}, 2)
+}
+
+func TestRunAgentEnabledChecksPostgresRequiresToken(t *testing.T) {
+	// No --auth-token / PORTREACH_AGENT_TOKEN and postgres enabled → config
+	// error (fail-closed), regardless of what's in the ambient environment.
+	t.Setenv("PORTREACH_AGENT_TOKEN", "")
+	assertExit(t, []string{"agent", "--enabled-checks=postgres"}, 2)
+}
+
+func TestRunAgentEnabledChecksPostgresWithTokenPassesValidation(t *testing.T) {
+	// postgres enabled + a token set must clear config validation; the bad
+	// listen address then fails at bind (exit 1), proving the exit 2 path
+	// above was specifically about the missing token, not the flag itself.
+	// This also covers "tcp can be disabled": enabled-checks names postgres
+	// only, with no tcp.
+	assertExit(t, []string{"agent", "--enabled-checks=postgres", "--auth-token=s3cr3t", "--listen=127.0.0.1:99999"}, 1)
+}
+
+func TestRunAgentEnabledChecksDefaultIsTCPOnly(t *testing.T) {
+	// Default --enabled-checks (tcp only) needs no token; config validation
+	// passes and the bad listen address fails at bind (exit 1), not exit 2.
+	t.Setenv("PORTREACH_AGENT_TOKEN", "")
+	assertExit(t, []string{"agent", "--listen=127.0.0.1:99999"}, 1)
+}
+
+func TestRunAgentEnabledChecksBlankIsStartupError(t *testing.T) {
+	// An explicitly blank --enabled-checks parses without error (see
+	// checkapi.ParseEnabledChecks) but leaves nothing for Handler to route —
+	// since the agent now registers a check endpoint per Has(name), that must
+	// be a startup configuration error rather than a silently-empty agent.
+	assertExit(t, []string{"agent", "--enabled-checks="}, 2)
+}
+
+func TestRunAgentEnabledChecksEnvMirror(t *testing.T) {
+	// PORTREACH_ENABLED_CHECKS=postgres with no token reaches the same
+	// fail-closed error as the flag form, proving the env mirror is wired.
+	t.Setenv("PORTREACH_ENABLED_CHECKS", "postgres")
+	t.Setenv("PORTREACH_AGENT_TOKEN", "")
+	assertExit(t, []string{"agent"}, 2)
+}
+
+func TestRunUIEnabledChecksUnknownName(t *testing.T) {
+	assertExit(t, []string{"ui", "--agents=a:1", "--enabled-checks=tcp,mysql"}, 2)
+}
+
+func TestRunUIEnabledChecksPostgresRequiresToken(t *testing.T) {
+	t.Setenv("PORTREACH_AGENT_TOKEN", "")
+	assertExit(t, []string{"ui", "--agents=a:1", "--enabled-checks=postgres"}, 2)
+}
+
+func TestRunUIEnabledChecksPostgresWithTokenPassesValidation(t *testing.T) {
+	assertExit(t, []string{"ui", "--agents=a:1", "--enabled-checks=postgres", "--agent-token=s3cr3t", "--listen=127.0.0.1:99999"}, 1)
+}
+
+func TestRunUIEnabledChecksDefaultIsTCPOnly(t *testing.T) {
+	t.Setenv("PORTREACH_AGENT_TOKEN", "")
+	assertExit(t, []string{"ui", "--agents=a:1", "--listen=127.0.0.1:99999"}, 1)
+}
+
+func TestRunUIEnabledChecksEnvMirror(t *testing.T) {
+	t.Setenv("PORTREACH_ENABLED_CHECKS", "postgres")
+	t.Setenv("PORTREACH_AGENT_TOKEN", "")
+	assertExit(t, []string{"ui", "--agents=a:1"}, 2)
+}
+
+func TestRunUIEnabledChecksBlankIsStartupError(t *testing.T) {
+	// An explicitly blank --enabled-checks parses without error (see
+	// checkapi.ParseEnabledChecks) but leaves nothing for Handler to route —
+	// since the UI now registers a check route per Has(name) (Task 7), that
+	// must be a startup configuration error rather than a silently-empty UI,
+	// mirroring the agent's identical check.
+	assertExit(t, []string{"ui", "--agents=a:1", "--enabled-checks="}, 2)
+}
+
+func TestEnvString(t *testing.T) {
+	t.Setenv("PORTREACH_TEST_ENABLED_CHECKS", "postgres")
+	if got := envString("PORTREACH_TEST_ENABLED_CHECKS", "tcp"); got != "postgres" {
+		t.Fatalf("envString = %q, want postgres", got)
+	}
+	t.Setenv("PORTREACH_TEST_ENABLED_CHECKS", "")
+	if got := envString("PORTREACH_TEST_ENABLED_CHECKS", "tcp"); got != "tcp" {
+		t.Fatalf("envString unset = %q, want fallback tcp", got)
+	}
+}
+
 func TestEnvInt(t *testing.T) {
 	t.Setenv("PORTREACH_AGENT_PORT", "9001")
 	if got := envInt("PORTREACH_AGENT_PORT", 8732); got != 9001 {

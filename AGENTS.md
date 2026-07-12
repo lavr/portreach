@@ -14,18 +14,33 @@ are aggregated in a web UI. Single Go binary, three subcommands.
 
 - `main.go` — entrypoint; sets `version` (via ldflags) and dispatches to `internal/cmd`.
 - `internal/cmd` — CLI dispatch + per-subcommand flag/env wiring (`agent`, `ui`, `version`).
-- `internal/agent` — the probe HTTP server (`/check`, `/healthz`, `/metrics`); installs
-  the default-on cloud-metadata connect guard (link-local `169.254.0.0/16` + IPv6
-  `fd00:ec2::254`, off with `--allow-metadata`; operator `--deny` is independent and wins).
-- `internal/probe` — TCP + DNS + latency probing; the metadata guard is a connect-time
+- `internal/checkapi` — the shared UI↔agent JSON wire contract (`TCPCheckRequest`,
+  `PostgresCheckRequest`, `Credentials`, `TLSOptions`, `AuthResult` + its stable code
+  set), the `EnabledChecks` allowlist type, and the size-limited-body constant. No
+  response-shaped type carries a password (enforced by a reflection test).
+- `internal/agent` — the probe HTTP server. Per-protocol **`POST` endpoints**
+  `/api/check/tcp` and `/api/check/postgres` (registered only when in `--enabled-checks`;
+  a disabled or removed route 404s — the old `GET /check` is gone), plus `/healthz` and
+  `/metrics`. Installs the default-on cloud-metadata connect guard (link-local
+  `169.254.0.0/16` + IPv6 `fd00:ec2::254`, off with `--allow-metadata`; operator `--deny`
+  is independent and wins).
+- `internal/probe` — TCP + DNS + latency probing. A shared dial layer (`dial.go`) resolves
+  and races candidates and returns the winning open conn; `Run` (TCP) closes it, and
+  `RunPostgres` runs the auth prober on it. The metadata guard is a connect-time
   `net.Dialer.Control` check (not policy pre-resolve), surfaced as `Result.Denied`.
+- `internal/probe/pgauth` — the PostgreSQL auth prober: `jackc/pgx`'s low-level `pgconn`
+  (connect + auth + `Exec("SELECT 1")`) behind a fakeable interface, given a **guarded
+  `DialFunc`** so the metadata guard applies to the auth dial too. `Fallbacks=nil` (no
+  silent TLS downgrade); maps pgconn errors to `AuthResult` codes; never logs the password.
 - `internal/discovery` — agent discovery (static CSV list + DNS A-records).
 - `internal/ratelimit` — optional reservation-based token-bucket limiter (per-user,
   per-target, global; atomic multi-bucket reserve + rollback) used by UI and agent.
-- `internal/ui` — UI fan-out aggregator, JSON API, server-rendered web form (`web/index.html`).
-  The aggregator's per-check fan-out is optionally bounded (`maxAgentsPerCheck` /
-  `maxConcurrentFanout`, both `0` = unlimited = today's every-node behaviour; drops are
-  reported via explicit `discovered`/`queried`/`dropped` counts, never silent).
+- `internal/ui` — UI fan-out aggregator, per-protocol `POST /api/check/{tcp,postgres}`
+  JSON API, server-rendered web form (`web/index.html`) that POSTs (credentials never in
+  a URL) and shows the Postgres fields only when enabled. The aggregator's per-check
+  fan-out is optionally bounded (`maxAgentsPerCheck` / `maxConcurrentFanout`, both `0` =
+  unlimited = today's every-node behaviour; drops are reported via explicit
+  `discovered`/`queried`/`dropped` counts, never silent).
 - `internal/auth` — optional UI auth, off unless configured. Two independent paths
   resolving to the same `Session`/RBAC: browser SSO (GitHub OAuth2 + generic OIDC
   presets, sealed-cookie session) and **API bearer** (OIDC/JWT access tokens validated
@@ -73,14 +88,26 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
 - **Match the surrounding code.** This codebase favors small, well-commented
   functions; comments explain *why* (especially around timeouts, deadlines, and
   security trade-offs), not *what*. Keep that density.
+- **Go conventions**: define interfaces in the package that consumes them, not
+  beside their implementation; put `context.Context` first in every blocking or
+  cancellable function; defer cleanup immediately after acquiring files,
+  connections, contexts, or locks; keep changes focused — don't mix unrelated
+  cleanup or general improvements into a feature.
 - **Tests live next to code** as `*_test.go` and are **hermetic** — fake servers
   with `net/http/httptest`, never real network. New/changed behavior needs tests
   (success + error paths). Target ≥ 80% coverage on touched packages.
+- **Test isolation.** Tests never read or modify the real environment: filesystem
+  tests use `t.TempDir()`, environment variables are set via `t.Setenv`, and
+  nothing talks to a live cluster or external service. Test helpers call
+  `t.Helper()`.
 - **Dependencies are intentionally minimal.** The core started stdlib-only; the
-  only external deps (`golang.org/x/oauth2`, `github.com/coreos/go-oidc/v3`,
+  external deps (`golang.org/x/oauth2`, `github.com/coreos/go-oidc/v3`,
   `golang.org/x/text`, `gopkg.in/yaml.v3`, `golang.org/x/time/rate` for the rate
-  limiter) were added for SSO/OIDC/i18n and abuse controls. Don't add new deps
-  casually — prefer stdlib; if a dep is warranted, justify it.
+  limiter, and `github.com/jackc/pgx/v5` — only `pgconn` — for the PostgreSQL check)
+  were each added for a specific feature: SSO/OIDC, i18n, abuse controls, and the
+  credentialed postgres probe. `pgx` was chosen over a hand-rolled wire protocol so
+  PostgreSQL protocol/CVE tracking is the driver's job, not ours (decision 2026-07-12).
+  Don't add new deps casually — prefer stdlib; if a dep is warranted, justify it.
 - **Security-sensitive surfaces**: the UI triggers outbound connections from every
   node (SSRF surface) and `internal/auth` handles cookies/tokens/allowlists. Treat
   changes there carefully; preserve the fail-closed behavior and the existing
@@ -108,11 +135,30 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
   - *UI → agent*: agent endpoints (`internal/agent`) are internal cluster traffic.
     They carry **no SSO** — instead an optional shared bearer token
     (`--auth-token` / `PORTREACH_AGENT_TOKEN`, constant-time compare) is the primary
-    isolation boundary; the UI sends it on every `/check` (`--agent-token`). The same
-    token gates `/metrics` by default (`--metrics-public` opts it back open for
+    isolation boundary; the UI sends it on every `/api/check/*` (`--agent-token`). The
+    same token gates `/metrics` by default (`--metrics-public` opts it back open for
     Prometheus); `/healthz` is always open. NetworkPolicy is best-effort only and
     frequently unenforced under `hostNetwork` — don't rely on it instead of the token.
     Don't put OIDC/SSO on the agent; the shared token is the design.
+- **Enabled-checks allowlist** (`--enabled-checks`, default `tcp`; env
+  `PORTREACH_ENABLED_CHECKS`): selects which per-protocol endpoints each binary serves;
+  a disabled check's route is never registered (404). `tcp` may be disabled; a blank set
+  is a startup error; `/healthz` and `/metrics` are never gated by it.
+- **PostgreSQL check** (`postgres`, off by default): a credentialed probe (per-request
+  username/password/database + TLS), SCRAM/MD5 via `pgconn`, TLS-verified to the DB by
+  default, ending in `SELECT 1`. **Fail-closed**: enabling it *requires* the agent token
+  (agent `--auth-token`, UI `--agent-token`) or the process exits at startup; the Helm
+  chart enforces the same at render time. The password is read only from the size-limited
+  JSON body / POST form and never reaches a URL, log, error, `Result`, response, or the
+  rendered HTML (reflection + redaction tests guard this). A dedicated postgres rate
+  limiter is auto-on (disable via `--disable-postgres-rate-limit`) and every request is
+  audited (`postgres_check` event, no password). The SSRF metadata guard runs before any
+  handshake **and** on the prober's own dial. ⚠️ The UI→agent hop is plain HTTP in this
+  release — the token authorizes but does not encrypt, so the password crosses it in
+  cleartext; native agent TLS is a separate plan
+  (`docs/superpowers/specs/2026-07-12-agent-tls-design.md`).
+- **Commits**: no `Co-Authored-By` trailer and no AI-attribution lines in commit
+  messages or PR descriptions.
 
 ## Helm chart
 
@@ -122,6 +168,10 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
 - `image.tag` is the single source of truth: empty → `.Chart.AppVersion`; set →
   verbatim. Discovery name: `ui.agentsDnsName` override → `ui.discovery.mode`
   (`relative` default / `fqdn` / `bare`) → `clusterDomain` (fqdn only).
+- `ui.enabledChecks` / `agent.enabledChecks` (default `[tcp]`) render `--enabled-checks`;
+  `portreach.validateChecks` (`templates/_helpers.tpl`, run via `templates/validate.yaml`)
+  fails the render when the UI offers a check the agent doesn't serve, or when `postgres`
+  is enabled without an agent token — the same fail-closed rules the binaries enforce.
 - Verify chart changes with `internal/charttest` (`go test ./internal/charttest/`),
   `helm lint`, and for DNS/discovery behavior the `scripts/chart-smoke.sh` kind harness.
 

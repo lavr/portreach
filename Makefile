@@ -4,7 +4,7 @@ IMAGE_NAME ?= lavr/portreach
 # Escape single quotes for safe shell embedding in single-quoted strings
 sq = $(subst ','\'',$(1))
 
-.PHONY: build test lint fmt race vet docker-build version run
+.PHONY: build test test-e2e lint fmt race vet docker-build version run
 
 build:
 	mkdir -p dist/
@@ -13,6 +13,13 @@ build:
 test:
 	go test -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out | tail -1
+
+# test-e2e runs the build-tagged suites that need real external services (e.g.
+# the pgauth PostgreSQL e2e suite). It is excluded from `make test`. Point it at
+# a server via PORTREACH_TEST_PG_* (see internal/probe/pgauth/e2e_test.go);
+# unset variables skip rather than fail.
+test-e2e:
+	go test -tags e2e ./...
 
 vet:
 	go vet ./...

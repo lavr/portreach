@@ -135,9 +135,19 @@ func TestIndexLocalizedFormEnglishDefault(t *testing.T) {
 	if !strings.Contains(body, `lang="en"`) {
 		t.Errorf("expected English <html lang>:\n%s", body)
 	}
-	for _, want := range []string{">host\n", ">port\n", ">proto\n", ">timeout\n", ">check<"} {
+	// proto is no longer a form field: a TCP-only deployment has no protocol
+	// choice to offer (the check-type selector appears only when postgres is
+	// also enabled — see TestIndexPostgresFields).
+	for _, want := range []string{">host\n", ">port\n", ">timeout\n", ">check<"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("English form missing %q:\n%s", want, body)
+		}
+	}
+	// The Postgres credential fields and check-type selector must be absent when
+	// postgres is not enabled.
+	for _, absent := range []string{`name="check"`, `name="password"`, `name="username"`} {
+		if strings.Contains(body, absent) {
+			t.Errorf("TCP-only form leaked postgres field %q:\n%s", absent, body)
 		}
 	}
 }
@@ -153,7 +163,7 @@ func TestIndexLocalizedFormRussian(t *testing.T) {
 	if !strings.Contains(body, `lang="ru"`) {
 		t.Errorf("expected Russian <html lang>:\n%s", body)
 	}
-	for _, want := range []string{"хост", "порт", "протокол", "таймаут", "проверить", "доступность с каждого узла"} {
+	for _, want := range []string{"хост", "порт", "таймаут", "проверить", "доступность с каждого узла"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Russian form missing %q:\n%s", want, body)
 		}

@@ -3,25 +3,41 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
-	"strconv"
 	"sync"
+	"time"
 
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/discovery"
 	"github.com/lavr/portreach/internal/probe"
 )
 
-// Target is the host:port to check from every agent.
+// Target is the host:port to check from every agent. It never carries
+// protocol-specific auth details (see PostgresAuth) — Target is echoed back
+// verbatim in Response.Target, so keeping it to routing-only fields means a
+// Postgres check's credentials can never leak into a response body or an
+// incidental log line via generic struct formatting (%v/%+v follow pointer
+// fields, so a Credentials field here would risk exactly that).
 type Target struct {
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	Proto   string `json:"proto"`
 	Timeout string `json:"timeout,omitempty"`
+}
+
+// PostgresAuth carries the Postgres-only auth details a fan-out threads
+// through to checkOne. It is passed as a separate argument through
+// CheckAll/checkOne — never folded into Target — for the redaction reason
+// documented on Target above. nil means the check is not a Postgres check (or
+// carries no credentials yet, which Validate would have already rejected).
+type PostgresAuth struct {
+	Credentials checkapi.Credentials
+	TLS         *checkapi.TLSOptions
 }
 
 // AgentResult is one agent's answer for the target. Error is set when the agent
@@ -83,15 +99,18 @@ func selectAgents(agents []discovery.Agent, max int) (selected []discovery.Agent
 	return sorted[:max], len(agents) - max
 }
 
-// CheckAll queries every agent's /check endpoint in parallel for the target and
-// returns one AgentResult per agent. A failing agent yields a result with Error
-// set rather than aborting the whole fan-out. Results are ordered by agent addr
-// for stable output. The caller's ctx bounds the overall fan-out; client should
-// carry a per-request timeout. token, when non-empty, is sent as the agent
-// bearer token on every /check call; empty means no header (backward compatible).
-// maxConcurrent bounds the worker pool: 0 (or >= len(agents)) means a goroutine
-// per agent (today's behaviour); a positive value runs that many concurrently.
-func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent, target Target, token string, maxConcurrent int) []AgentResult {
+// CheckAll queries every agent's protocol-specific check endpoint in parallel
+// for the target and returns one AgentResult per agent. A failing agent yields
+// a result with Error set rather than aborting the whole fan-out. Results are
+// ordered by agent addr for stable output. The caller's ctx bounds the overall
+// fan-out; client should carry a per-request timeout. token, when non-empty,
+// is sent as the agent bearer token on every check call; empty means no header
+// (backward compatible). auth carries Postgres credentials/TLS when
+// target.Proto is "postgres" (see PostgresAuth); it is ignored for other
+// protocols. maxConcurrent bounds the worker pool: 0 (or >= len(agents)) means
+// a goroutine per agent (today's behaviour); a positive value runs that many
+// concurrently.
+func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent, target Target, auth *PostgresAuth, token string, maxConcurrent int) []AgentResult {
 	results := make([]AgentResult, len(agents))
 	// A nil semaphore means unlimited concurrency; a positive cap caps in-flight
 	// probes. We never build a zero-capacity channel (it would deadlock).
@@ -110,7 +129,7 @@ func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent
 			if sem != nil {
 				defer func() { <-sem }()
 			}
-			results[i] = checkOne(ctx, client, a, target, token)
+			results[i] = checkOne(ctx, client, a, target, auth, token)
 		}(i, a)
 	}
 	wg.Wait()
@@ -120,26 +139,35 @@ func CheckAll(ctx context.Context, client *http.Client, agents []discovery.Agent
 }
 
 // checkOne queries a single agent, normalizing transport and decode failures
-// into the Error field. A non-empty token is attached as the agent bearer token.
-func checkOne(ctx context.Context, client *http.Client, a discovery.Agent, target Target, token string) AgentResult {
+// into the Error field. A non-empty token is attached as the agent bearer
+// token. Unlike the pre-Task-7 /check GET, every check is a POST carrying a
+// JSON body — the Postgres body carries credentials, and a password has no
+// safe place in a URL (query strings end up in access logs, proxies, and
+// browser history), so POST-with-body is used uniformly rather than only for
+// the protocol that needs it.
+func checkOne(ctx context.Context, client *http.Client, a discovery.Agent, target Target, auth *PostgresAuth, token string) AgentResult {
 	out := AgentResult{Agent: a.Addr}
 
-	q := url.Values{}
-	q.Set("host", target.Host)
-	q.Set("port", strconv.Itoa(target.Port))
-	if target.Proto != "" {
-		q.Set("proto", target.Proto)
-	}
+	var timeout checkapi.Duration
 	if target.Timeout != "" {
-		q.Set("timeout", target.Timeout)
+		if d, err := time.ParseDuration(target.Timeout); err == nil {
+			timeout = checkapi.Duration(d)
+		}
 	}
-	endpoint := "http://" + a.Addr + "/check?" + q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	path, body, err := checkRequestBody(target, auth, timeout)
 	if err != nil {
 		out.Error = err.Error()
 		return out
 	}
+	endpoint := "http://" + a.Addr + path
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		out.Error = err.Error()
+		return out
+	}
+	req.Header.Set("Content-Type", "application/json")
 	// Authenticate to the agent when a shared token is configured; an empty
 	// token leaves the request unauthenticated (today's open-agent behaviour).
 	if token != "" {
@@ -176,6 +204,28 @@ func checkOne(ctx context.Context, client *http.Client, a discovery.Agent, targe
 	out.Node = acr.Node
 	out.Result = acr.Result
 	return out
+}
+
+// checkRequestBody selects the agent endpoint path and marshals the matching
+// checkapi request body for target.Proto: "postgres" gets
+// PostgresCheckRequest (credentials + TLS from auth) posted to
+// /api/check/postgres, everything else (including the default "tcp") gets
+// TCPCheckRequest posted to /api/check/tcp. Keeping the switch here, rather
+// than in checkOne, isolates the one place proto strings are compared against
+// checkapi.CheckName so a third protocol only touches this function.
+func checkRequestBody(target Target, auth *PostgresAuth, timeout checkapi.Duration) (path string, body []byte, err error) {
+	if checkapi.CheckName(target.Proto) == checkapi.CheckPostgres {
+		req := checkapi.PostgresCheckRequest{Host: target.Host, Port: target.Port, Timeout: timeout}
+		if auth != nil {
+			req.Credentials = auth.Credentials
+			req.TLS = auth.TLS
+		}
+		body, err = json.Marshal(req)
+		return "/api/check/postgres", body, err
+	}
+	req := checkapi.TCPCheckRequest{Host: target.Host, Port: target.Port, Timeout: timeout}
+	body, err = json.Marshal(req)
+	return "/api/check/tcp", body, err
 }
 
 // Summary counts how many agents reported a successful TCP connection.

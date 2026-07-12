@@ -21,27 +21,57 @@ th { background: #8881; }
 .summary { margin: 1rem 0; font-weight: 600; }
 .muted { color: #8888; }
 .branding-footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #8884; color: #888; }
+fieldset.pg-fields { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; border: 1px solid #8884; border-radius: .3rem; padding: .5rem .75rem .75rem; width: 100%; }
+fieldset.pg-fields legend { font-size: .8rem; color: #888; padding: 0 .3rem; }
+label.check-inline { flex-direction: row; align-items: center; gap: .3rem; font-size: .9rem; }
 </style>
 </head>
 <body>
 {{if .ShowTitle}}<h1>{{.Title}}</h1>{{end}}
 {{if .Description}}<div class="branding-description">{{.Description}}</div>{{end}}
-<form method="get" action="/">
+<form method="post" action="/">
+  {{if .PostgresEnabled}}
+  <label>{{.L.T "form.check_type"}}
+    <select name="check">
+      <option value="tcp"{{if not .IsPostgres}} selected{{end}}>{{.L.T "check.tcp"}}</option>
+      <option value="postgres"{{if .IsPostgres}} selected{{end}}>{{.L.T "check.postgres"}}</option>
+    </select>
+  </label>
+  {{end}}
   <label>{{.L.T "form.host"}}
     <input type="text" name="host" value="{{.Host}}" placeholder="dwh-clickhouse-pre" autofocus>
   </label>
   <label>{{.L.T "form.port"}}
-    <input type="text" name="port" value="{{.Port}}" placeholder="8123">
-  </label>
-  <label>{{.L.T "form.proto"}}
-    <select name="proto">
-      <option value="tcp"{{if eq .Proto "tcp"}} selected{{end}}>tcp</option>
-    </select>
+    <input type="text" name="port" value="{{.Port}}" placeholder="5432">
   </label>
   <label>{{.L.T "form.timeout"}}
     <input type="text" name="timeout" value="{{.Timeout}}" placeholder="5s">
   </label>
   <button type="submit">{{.L.T "form.check"}}</button>
+
+  {{if .PostgresEnabled}}
+  <fieldset class="pg-fields">
+    <legend>{{.L.T "form.pg_legend"}}</legend>
+    <label>{{.L.T "form.username"}}
+      <input type="text" name="username" value="{{.Username}}" autocomplete="off">
+    </label>
+    <label>{{.L.T "form.password"}}
+      <input type="password" name="password" value="" autocomplete="off">
+    </label>
+    <label>{{.L.T "form.database"}}
+      <input type="text" name="database" value="{{.Database}}" autocomplete="off">
+    </label>
+    <label class="check-inline">
+      <input type="checkbox" name="tls" value="1"{{if .TLSEnabled}} checked{{end}}> {{.L.T "form.tls"}}
+    </label>
+    <label class="check-inline">
+      <input type="checkbox" name="tls_skip_verify" value="1"{{if .TLSSkip}} checked{{end}}> {{.L.T "form.tls_skip_verify"}}
+    </label>
+    <label>{{.L.T "form.tls_server_name"}}
+      <input type="text" name="tls_server_name" value="{{.ServerName}}" autocomplete="off">
+    </label>
+  </fieldset>
+  {{end}}
 </form>
 
 {{if .Error}}
@@ -52,9 +82,10 @@ th { background: #8881; }
 <p class="summary">{{.L.T "result.summary" (printf "%d" .Summary.OK) (printf "%d" .Summary.Total) .Host .Port .Proto}}</p>
 <table>
   <thead>
-    <tr><th>{{.L.T "table.node"}}</th><th>{{.L.T "table.src_ip"}}</th><th>{{.L.T "table.dns"}}</th><th>{{.L.T "table.tcp"}}</th><th>{{.L.T "table.latency"}}</th><th>{{.L.T "table.error"}}</th></tr>
+    <tr><th>{{.L.T "table.node"}}</th><th>{{.L.T "table.src_ip"}}</th><th>{{.L.T "table.dns"}}</th><th>{{.L.T "table.tcp"}}</th>{{if .IsPostgres}}<th>{{.L.T "table.auth"}}</th>{{end}}<th>{{.L.T "table.latency"}}</th><th>{{.L.T "table.error"}}</th></tr>
   </thead>
   <tbody>
+  {{$pg := .IsPostgres}}
   {{range .Results}}
     <tr>
       <td>{{if .Node}}{{.Node}}{{else}}<span class="muted">{{.Agent}}</span>{{end}}</td>
@@ -69,8 +100,16 @@ th { background: #8881; }
           {{if .OK}}<span class="ok">{{$.L.T "result.open"}}</span>{{else}}<span class="fail">{{$.L.T "result.closed"}}</span>{{end}}
         {{- else -}}<span class="muted">&mdash;</span>{{- end -}}
       </td>
-      <td>{{with .TCP}}{{printf "%.1f" .MS}} ms{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-      <td class="err">{{.Error}}{{with .TCP}}{{if not .OK}}{{.Error}}{{end}}{{end}}</td>
+      {{if $pg}}
+      <td>
+        {{- with .Auth -}}
+          {{if .OK}}<span class="ok">{{$.L.T "result.auth_ok"}}</span>{{if .ServerVersion}} <span class="muted">{{.ServerVersion}}</span>{{end}}
+          {{else}}<span class="fail">{{$.L.T "result.auth_fail"}}</span> <span class="muted">{{.Code}}</span>{{end}}
+        {{- else -}}<span class="muted">&mdash;</span>{{- end -}}
+      </td>
+      {{end}}
+      <td>{{if $pg}}{{with .Auth}}{{printf "%.1f" .MS}} ms{{else}}<span class="muted">&mdash;</span>{{end}}{{else}}{{with .TCP}}{{printf "%.1f" .MS}} ms{{else}}<span class="muted">&mdash;</span>{{end}}{{end}}</td>
+      <td class="err">{{.Error}}{{with .TCP}}{{if not .OK}}{{.Error}}{{end}}{{end}}{{if $pg}}{{with .Auth}}{{if not .OK}}{{.Reason}}{{end}}{{end}}{{end}}</td>
     </tr>
   {{end}}
   </tbody>

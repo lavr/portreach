@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/discovery"
 	"github.com/lavr/portreach/internal/probe"
 )
@@ -57,7 +58,7 @@ func TestCheckAllMixed(t *testing.T) {
 	defer failAgent.Close()
 
 	agents := []discovery.Agent{{Addr: addr(okAgent)}, {Addr: addr(failAgent)}}
-	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "", 0)
+	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, nil, "", 0)
 
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
@@ -98,7 +99,7 @@ func TestCheckAllPartialFailure(t *testing.T) {
 		{Addr: addr(errAgent)},
 		{Addr: deadAddr},
 	}
-	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, "", 0)
+	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "example", Port: 80}, nil, "", 0)
 
 	if len(results) != 3 {
 		t.Fatalf("got %d results, want 3", len(results))
@@ -121,13 +122,18 @@ func TestCheckAllPartialFailure(t *testing.T) {
 
 func TestCheckAllTimeout(t *testing.T) {
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Drain the (now non-empty, POST) request body before blocking: net/http
+		// only starts watching the connection for a client-side close/timeout
+		// once the request body has been fully read, so an unread body here would
+		// leave r.Context() never canceled and hang the test at slow.Close().
+		_, _ = io.Copy(io.Discard, r.Body)
 		<-r.Context().Done()
 	}))
 	defer slow.Close()
 
 	client := &http.Client{Timeout: 100 * time.Millisecond}
 	agents := []discovery.Agent{{Addr: addr(slow)}}
-	results := CheckAll(context.Background(), client, agents, Target{Host: "example", Port: 80}, "", 0)
+	results := CheckAll(context.Background(), client, agents, Target{Host: "example", Port: 80}, nil, "", 0)
 
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
@@ -144,7 +150,7 @@ func TestCheckAllTimeout(t *testing.T) {
 }
 
 func TestCheckAllEmpty(t *testing.T) {
-	results := CheckAll(context.Background(), newClient(), nil, Target{Host: "x", Port: 80}, "", 0)
+	results := CheckAll(context.Background(), newClient(), nil, Target{Host: "x", Port: 80}, nil, "", 0)
 	if len(results) != 0 {
 		t.Fatalf("got %d results, want 0", len(results))
 	}
@@ -159,7 +165,7 @@ func TestCheckAllDecodeError(t *testing.T) {
 	}))
 	defer bad.Close()
 
-	results := CheckAll(context.Background(), newClient(), []discovery.Agent{{Addr: addr(bad)}}, Target{Host: "x", Port: 80}, "", 0)
+	results := CheckAll(context.Background(), newClient(), []discovery.Agent{{Addr: addr(bad)}}, Target{Host: "x", Port: 80}, nil, "", 0)
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
@@ -188,7 +194,7 @@ func TestCheckAllAttachesAgentToken(t *testing.T) {
 	defer srv.Close()
 
 	agents := []discovery.Agent{{Addr: addr(srv)}}
-	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "s3cret", 0)
+	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, nil, "s3cret", 0)
 	if got != "Bearer s3cret" {
 		t.Errorf("Authorization = %q, want %q", got, "Bearer s3cret")
 	}
@@ -200,28 +206,25 @@ func TestCheckAllNoTokenNoHeader(t *testing.T) {
 	defer srv.Close()
 
 	agents := []discovery.Agent{{Addr: addr(srv)}}
-	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "", 0)
+	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, nil, "", 0)
 	if got != "" {
 		t.Errorf("Authorization = %q, want empty (no header)", got)
 	}
 }
 
 // TestServerForwardsConfiguredAgentToken proves the full wiring: a token passed
-// to New via WithAgentToken reaches the agent on a real /api/check request, not
-// just the CheckAll helper exercised in isolation above.
+// to New via WithAgentToken reaches the agent on a real /api/check/tcp request,
+// not just the CheckAll helper exercised in isolation above.
 func TestServerForwardsConfiguredAgentToken(t *testing.T) {
 	var got string
 	agent := capturingAgent(t, &got)
 	defer agent.Close()
 
 	disc := staticList{{Addr: addr(agent)}}
-	srv := httptest.NewServer(New(disc, time.Second, WithAgentToken("s3cret")).Handler())
+	srv := httptest.NewServer(New(disc, time.Second, WithAgentToken("s3cret"), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -281,13 +284,10 @@ func TestAPICheck(t *testing.T) {
 	defer failAgent.Close()
 
 	disc := staticList{{Addr: addr(okAgent)}, {Addr: addr(failAgent)}}
-	srv := httptest.NewServer(New(disc, 2*time.Second).Handler())
+	srv := httptest.NewServer(New(disc, 2*time.Second, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -305,6 +305,66 @@ func TestAPICheck(t *testing.T) {
 	}
 	if out.Summary.OK != 1 || out.Summary.Total != 2 {
 		t.Errorf("summary = %+v, want ok=1 total=2", out.Summary)
+	}
+}
+
+// TestAPICheckOldRouteRemoved proves the pre-Task-7 GET /api/check is gone: it
+// 404s exactly like any other unknown path, regardless of which checks are
+// enabled.
+func TestAPICheckOldRouteRemoved(t *testing.T) {
+	disc := staticList{}
+	srv := httptest.NewServer(New(disc, time.Second, WithEnabledChecks(mustEnabled(t, "tcp,postgres"))).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /api/check status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestAPICheckDisabledRoute404s proves a check's route is not registered at
+// all when it is not in enabledChecks: a request for it 404s exactly like any
+// unknown path, both for postgres-disabled and tcp-disabled configurations.
+func TestAPICheckDisabledRoute404s(t *testing.T) {
+	disc := staticList{}
+
+	tcpOnly := httptest.NewServer(New(disc, time.Second, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
+	defer tcpOnly.Close()
+	resp := postJSON(t, tcpOnly.URL, "/api/check/postgres", checkapi.PostgresCheckRequest{Host: "example", Port: 80, Credentials: checkapi.Credentials{Username: "u", Password: "p"}})
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("postgres-disabled: /api/check/postgres status = %d, want 404", resp.StatusCode)
+	}
+
+	postgresOnly := httptest.NewServer(New(disc, time.Second, WithEnabledChecks(mustEnabled(t, "postgres"))).Handler())
+	defer postgresOnly.Close()
+	resp2 := postTCPCheck(t, postgresOnly.URL, "example", 80)
+	defer resp2.Body.Close() //nolint:errcheck // best-effort close
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("tcp-disabled: /api/check/tcp status = %d, want 404", resp2.StatusCode)
+	}
+}
+
+// TestAPICheckMethodNotAllowed proves both check routes reject non-POST
+// methods with 405, mirroring the agent's requireMethod behaviour.
+func TestAPICheckMethodNotAllowed(t *testing.T) {
+	disc := staticList{}
+	srv := httptest.NewServer(New(disc, time.Second, WithEnabledChecks(mustEnabled(t, "tcp,postgres"))).Handler())
+	defer srv.Close()
+
+	for _, path := range []string{"/api/check/tcp", "/api/check/postgres"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s status = %d, want 405", path, resp.StatusCode)
+		}
 	}
 }
 
@@ -333,13 +393,10 @@ func TestAPICheckSmallBudgetStillProbes(t *testing.T) {
 
 	// 500ms budget, discovery eats ~200ms → ~300ms remains for the fan-out.
 	disc := slowList{agents: discovery.Agent{Addr: addr(okAgent)}, delay: 200 * time.Millisecond}
-	srv := httptest.NewServer(New(disc, 500*time.Millisecond).Handler())
+	srv := httptest.NewServer(New(disc, 500*time.Millisecond, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -358,37 +415,54 @@ func TestAPICheckSmallBudgetStillProbes(t *testing.T) {
 
 func TestAPICheckBadInput(t *testing.T) {
 	disc := staticList{{Addr: "127.0.0.1:1"}}
-	srv := httptest.NewServer(New(disc, time.Second).Handler())
+	srv := httptest.NewServer(New(disc, time.Second, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	cases := []string{
-		"/api/check?host=example",          // missing port
-		"/api/check?host=example&port=abc", // non-numeric port
-		"/api/check?host=&port=80",         // empty host
-		"/api/check?host=example&port=99999",
-		"/api/check?host=example&port=80&proto=udp",
-		"/api/check?host=example&port=80&timeout=bogus",
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing port", `{"host":"example"}`},
+		{"non-numeric port", `{"host":"example","port":"abc"}`},
+		{"empty host", `{"host":"","port":80}`},
+		{"port out of range", `{"host":"example","port":99999}`},
+		{"malformed json", `{not-json`},
 	}
 	for _, c := range cases {
-		resp, err := http.Get(srv.URL + c)
+		resp, err := http.Post(srv.URL+"/api/check/tcp", "application/json", strings.NewReader(c.body))
 		if err != nil {
-			t.Fatalf("GET %s: %v", c, err)
+			t.Fatalf("%s: POST: %v", c.name, err)
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("%s: status = %d, want 400", c, resp.StatusCode)
+			t.Errorf("%s: status = %d, want 400", c.name, resp.StatusCode)
 		}
 	}
 }
 
-func TestAPICheckDiscoveryError(t *testing.T) {
-	srv := httptest.NewServer(New(failingDisc{}, time.Second).Handler())
+// TestAPICheckOversizedBodyRejected proves the size cap (checkapi.MaxRequestBody)
+// rejects an oversized body with 400 rather than letting the handler buffer it.
+func TestAPICheckOversizedBodyRejected(t *testing.T) {
+	disc := staticList{}
+	srv := httptest.NewServer(New(disc, time.Second, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
+	huge := `{"host":"` + strings.Repeat("a", checkapi.MaxRequestBody+1) + `","port":80}`
+	resp, err := http.Post(srv.URL+"/api/check/tcp", "application/json", strings.NewReader(huge))
 	if err != nil {
-		t.Fatalf("GET: %v", err)
+		t.Fatalf("POST: %v", err)
 	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPICheckDiscoveryError(t *testing.T) {
+	srv := httptest.NewServer(New(failingDisc{}, time.Second, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
+	defer srv.Close()
+
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
@@ -414,13 +488,10 @@ func (timeoutDisc) Agents(ctx context.Context) ([]discovery.Agent, error) {
 // timeout, not a generic 502 — the DNS discoverer returns LookupHost's deadline
 // error directly rather than a nil result.
 func TestAPICheckDiscoveryTimeout(t *testing.T) {
-	srv := httptest.NewServer(New(timeoutDisc{}, 50*time.Millisecond).Handler())
+	srv := httptest.NewServer(New(timeoutDisc{}, 50*time.Millisecond, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want 504", resp.StatusCode)

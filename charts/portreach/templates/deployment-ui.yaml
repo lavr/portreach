@@ -60,6 +60,13 @@ spec:
             - ":{{ .Values.ui.port }}"
             - --timeout
             - {{ .Values.ui.timeout | quote }}
+            {{- with .Values.ui.enabledChecks }}
+            - --enabled-checks
+            - {{ join "," . | quote }}
+            {{- end }}
+            {{- if .Values.ui.disablePostgresRateLimit }}
+            - --disable-postgres-rate-limit
+            {{- end }}
             {{- if eq (include "portreach.auth.enabled" .) "true" }}
             - --auth-config
             - /etc/portreach/auth/auth.yaml

@@ -98,7 +98,7 @@ func TestCheckAllBoundsConcurrency(t *testing.T) {
 		agents[i] = discovery.Agent{Addr: a}
 	}
 
-	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "", 2)
+	results := CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, nil, "", 2)
 	if len(results) != 6 {
 		t.Fatalf("got %d results, want 6", len(results))
 	}
@@ -119,7 +119,7 @@ func TestCheckAllUnlimitedConcurrency(t *testing.T) {
 	}
 
 	// maxConcurrent = 0 means a goroutine per agent: all five should overlap.
-	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "", 0)
+	CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, nil, "", 0)
 	if got := atomic.LoadInt64(&maxSeen); got != 5 {
 		t.Errorf("max concurrent requests = %d, want 5 (unlimited)", got)
 	}
@@ -141,7 +141,7 @@ func TestCheckAllConcurrencyAtAndAboveAgentCount(t *testing.T) {
 			agents[i] = discovery.Agent{Addr: a}
 		}
 
-		results := CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, "", limit)
+		results := CheckAll(context.Background(), newClient(), agents, Target{Host: "x", Port: 80}, nil, "", limit)
 		if len(results) != 5 {
 			t.Fatalf("cap %d: got %d results, want 5", limit, len(results))
 		}
@@ -170,13 +170,10 @@ func TestAPICheckReportsFanoutCounts(t *testing.T) {
 	}()
 
 	srv := httptest.NewServer(New(staticList(agents), time.Second,
-		WithFanout(FanoutConfig{MaxAgentsPerCheck: 2})).Handler())
+		WithFanout(FanoutConfig{MaxAgentsPerCheck: 2}), WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 
 	var got Response
@@ -207,13 +204,10 @@ func TestAPICheckUnlimitedQueriesAll(t *testing.T) {
 		}
 	}()
 
-	srv := httptest.NewServer(New(staticList(agents), time.Second).Handler())
+	srv := httptest.NewServer(New(staticList(agents), time.Second, WithEnabledChecks(mustEnabled(t, "tcp"))).Handler())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/check?host=example&port=80")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	resp := postTCPCheck(t, srv.URL, "example", 80)
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 
 	var got Response

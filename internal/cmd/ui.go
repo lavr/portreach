@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lavr/portreach/internal/auth"
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/discovery"
 	"github.com/lavr/portreach/internal/ratelimit"
 	"github.com/lavr/portreach/internal/ui"
@@ -44,6 +45,8 @@ func runUI(args []string, deps Deps) error {
 	forwardedHeader := fs.String("forwarded-header", os.Getenv("PORTREACH_FORWARDED_HEADER"), "forwarded client-IP header trusted only from trusted-proxies; empty = X-Forwarded-For (env PORTREACH_FORWARDED_HEADER)")
 	maxAgentsPerCheck := fs.Int("max-agents-per-check", envInt("PORTREACH_MAX_AGENTS_PER_CHECK", 0), "cap agents queried per check; 0 = unlimited (every node). Over the cap, agents are chosen deterministically by address (env PORTREACH_MAX_AGENTS_PER_CHECK)")
 	maxConcurrentFanout := fs.Int("max-concurrent-fanout", envInt("PORTREACH_MAX_CONCURRENT_FANOUT", 0), "bound concurrent per-check agent requests; 0 = unlimited (a goroutine per agent) (env PORTREACH_MAX_CONCURRENT_FANOUT)")
+	enabledChecksFlag := fs.String("enabled-checks", envString("PORTREACH_ENABLED_CHECKS", checkapi.DefaultEnabledChecks), "comma-separated checks this UI offers: tcp, postgres (env PORTREACH_ENABLED_CHECKS)")
+	disablePostgresRateLimit := fs.Bool("disable-postgres-rate-limit", envBool("PORTREACH_UI_DISABLE_POSTGRES_RATE_LIMIT", false), "disable the built-in postgres-specific rate limiter (auto-on with the postgres check: per-user 6/min burst 3, per-target 12/min burst 3, global 60/min burst 10); it layers on top of --rate-limit, not a replacement for it (env PORTREACH_UI_DISABLE_POSTGRES_RATE_LIMIT)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // -h/--help: flag already printed usage, exit cleanly
@@ -53,6 +56,27 @@ func runUI(args []string, deps Deps) error {
 
 	disc, err := discovery.New(*agents, *agentsDNS, *agentPort, *agentPort, nil)
 	if err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+
+	enabledChecks, err := checkapi.ParseEnabledChecks(*enabledChecksFlag)
+	if err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+	// Handler (ui.Server) registers a check route per enabledChecks.Has(name),
+	// so a blank/empty set would silently come up serving no check endpoint at
+	// all — almost certainly a configuration mistake, not an intentional
+	// deployment. Fail fast rather than let it through, mirroring the agent's
+	// identical check (internal/cmd/agent.go).
+	if err := enabledChecks.RequireNonEmpty(); err != nil {
+		return &ExitError{Code: 2, Err: err}
+	}
+	// Fail closed: the UI is what forwards a user-supplied Postgres
+	// username/password to an agent; without --agent-token there is nothing
+	// proving the request came from this UI, so an operator enabling postgres
+	// without configuring the token gets a startup error, not a silent
+	// unauthenticated credential relay.
+	if err := enabledChecks.RequireTokenForPostgres(*agentToken, "--agent-token", "PORTREACH_AGENT_TOKEN"); err != nil {
 		return &ExitError{Code: 2, Err: err}
 	}
 
@@ -91,7 +115,7 @@ func runUI(args []string, deps Deps) error {
 		return &ExitError{Code: 2, Err: err}
 	}
 
-	handler, err := buildUIHandler(disc, *timeout, *authConfig, *agentToken, limiter, fanout, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
+	handler, err := buildUIHandler(disc, *timeout, *authConfig, *agentToken, limiter, fanout, enabledChecks, *disablePostgresRateLimit, deps.Stdout, handlerBranding{ui: uiBranding, login: loginBranding})
 	if err != nil {
 		return &ExitError{Code: 2, Err: err}
 	}
@@ -114,7 +138,7 @@ type handlerBranding struct {
 	login auth.LoginBranding
 }
 
-func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath, agentToken string, limiter *ratelimit.Limiter, fanout ui.FanoutConfig, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
+func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfigPath, agentToken string, limiter *ratelimit.Limiter, fanout ui.FanoutConfig, enabledChecks checkapi.EnabledChecks, disablePostgresRateLimit bool, out io.Writer, brandings ...handlerBranding) (http.Handler, error) {
 	var branding handlerBranding
 	if len(brandings) > 0 {
 		branding = brandings[0]
@@ -127,6 +151,8 @@ func buildUIHandler(disc discovery.Discoverer, timeout time.Duration, authConfig
 		ui.WithLimiter(limiter),
 		ui.WithLogger(logger),
 		ui.WithFanout(fanout),
+		ui.WithEnabledChecks(enabledChecks),
+		ui.WithDisablePostgresRateLimit(disablePostgresRateLimit),
 	).Handler()
 	// Audit every reachability check, attributing it to the authenticated user
 	// (or anonymous when auth is off, since no identity reaches the context).
@@ -196,6 +222,18 @@ func envFloat(name string, def float64) float64 {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
 		}
+	}
+	return def
+}
+
+// envString returns the value of env var name, or def when unset. Unlike the
+// other flags in this file (whose zero value is itself a meaningful default,
+// e.g. "" = auth disabled), --enabled-checks has a non-empty default
+// ("tcp"), so it needs the same env-then-default resolution as envInt/envBool
+// rather than reading os.Getenv directly as the flag default.
+func envString(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
 	}
 	return def
 }

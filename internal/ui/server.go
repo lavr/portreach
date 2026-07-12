@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/discovery"
 	"github.com/lavr/portreach/internal/probe"
 	"github.com/lavr/portreach/internal/ratelimit"
@@ -22,6 +23,28 @@ type Server struct {
 	limiter    *ratelimit.Limiter // nil = unlimited (default)
 	logger     *slog.Logger       // throttle audit events; nil = slog.Default()
 	fanoutCfg  FanoutConfig       // per-check fan-out bounds; zero = unlimited
+
+	// enabledChecks is the --enabled-checks allowlist (default tcp-only; see
+	// checkapi.ParseEnabledChecks). Handler consults it to decide which of
+	// /api/check/tcp and /api/check/postgres to register at all: a disabled
+	// check's route is never added to the mux, so a request for it 404s
+	// exactly like any other unknown path. It never governs /healthz.
+	enabledChecks checkapi.EnabledChecks
+
+	// postgresLimiter is a SEPARATE limiter layered on top of limiter for the
+	// postgres endpoint only (see internal/ui/ratelimit.go's
+	// uiPostgresLimiterConfig doc): a Postgres check drives a real
+	// authentication attempt against the target, so it warrants a tighter,
+	// dedicated budget rather than sharing the general limiter's buckets. New
+	// auto-builds one with the built-in defaults whenever the postgres check
+	// is enabled, unless disablePostgresRateLimit opts out or a caller
+	// supplied one directly via WithPostgresLimiter. Both limiters are
+	// consulted independently (see allow/allowPostgres) — tripping one never
+	// spends tokens from the other.
+	postgresLimiter *ratelimit.Limiter
+	// disablePostgresRateLimit, set via WithDisablePostgresRateLimit, is the
+	// only way to opt out of the auto-built postgres limiter above.
+	disablePostgresRateLimit bool
 }
 
 // New builds a UI Server. timeout bounds the whole fan-out budget; a
@@ -38,16 +61,56 @@ func New(disc discovery.Discoverer, timeout time.Duration, opts ...Option) *Serv
 	for _, opt := range opts {
 		opt(s)
 	}
+	// Auto-build the postgres-specific limiter whenever the postgres check is
+	// served, unless the operator opted out or already supplied one via
+	// WithPostgresLimiter (checked after options so both overrides apply).
+	// The bounds are fixed, known-good constants (see uiPostgresLimiterConfig),
+	// so a Validate failure here would only mean one of them regressed — a
+	// programming error, not a runtime condition to recover from.
+	if s.enabledChecks.Has(checkapi.CheckPostgres) && !s.disablePostgresRateLimit && s.postgresLimiter == nil {
+		lim, err := ratelimit.New(uiPostgresLimiterConfig)
+		if err != nil {
+			panic("ui: built-in postgres limiter config is invalid: " + err.Error())
+		}
+		s.postgresLimiter = lim
+	}
 	return s
 }
 
-// Handler returns the UI's HTTP routes.
+// Handler returns the UI's HTTP routes. Each check endpoint (/api/check/tcp,
+// /api/check/postgres) is registered only when the corresponding check is in
+// enabledChecks — a disabled check's route is never added to the mux, so a
+// request for it 404s exactly like any unknown path, mirroring the agent's
+// Handler (internal/agent/agent.go). The pre-Task-7 GET /api/check is gone
+// entirely: both routes are POST-only, since a Postgres check's credentials
+// belong in a JSON body, never a URL.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/api/check", s.handleAPICheck)
+	if s.enabledChecks.Has(checkapi.CheckTCP) {
+		mux.HandleFunc("/api/check/tcp", requireMethod(http.MethodPost, s.handleAPICheckTCP))
+	}
+	if s.enabledChecks.Has(checkapi.CheckPostgres) {
+		mux.HandleFunc("/api/check/postgres", requireMethod(http.MethodPost, s.handleAPICheckPostgres))
+	}
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	return mux
+}
+
+// requireMethod rejects any request whose method isn't method with a 405
+// before next ever sees it. The check endpoints take a JSON body and have no
+// meaningful query-string form, so a non-POST request is a protocol error
+// (wrong verb), not a validation failure on the payload — hence 405, not 400.
+// Mirrors internal/agent's requireMethod exactly.
+func requireMethod(method string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			w.Header().Set("Allow", method)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		next(w, r)
+	}
 }
 
 // parseTarget extracts and validates the target from the query string.
@@ -122,22 +185,16 @@ func clampTimeout(user string, budget time.Duration) string {
 // probe.Validate never substitutes its default.
 const minClampTimeout = 100 * time.Millisecond
 
-func (s *Server) handleAPICheck(w http.ResponseWriter, r *http.Request) {
-	target, err := parseTarget(r.URL.Query())
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	// Gate before any discovery/fan-out work so a throttled request is cheap.
-	if retry, ok := s.allow(r, target); !ok {
-		ra := ratelimit.RetryAfterSeconds(retry)
-		w.Header().Set("Retry-After", ra)
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{
-			"error":       "rate limit exceeded",
-			"retry_after": ra,
-		})
-		return
-	}
+// runCheck is the shared discovery+fan-out body behind both
+// handleAPICheckTCP and handleAPICheckPostgres (and, for the TCP-only web
+// form, handleIndex): given an already-validated, already-rate-limited
+// target, it discovers agents, clamps the per-agent timeout to the remaining
+// budget, fans out, and writes the aggregated Response envelope. auth carries
+// Postgres credentials/TLS (nil for a TCP check; see PostgresAuth) — it is
+// threaded straight through to CheckAll and never touches target or the
+// written response, so a Postgres password can't leak into the JSON envelope
+// this handler writes back to the client.
+func (s *Server) runCheck(w http.ResponseWriter, r *http.Request, target Target, auth *PostgresAuth) {
 	ctx, cancel := contextWithTimeout(r, s.timeout)
 	defer cancel()
 
@@ -171,7 +228,12 @@ func (s *Server) handleAPICheck(w http.ResponseWriter, r *http.Request) {
 	// real probe attempt rather than an automatic failure.
 	target.Timeout = clampTimeout(target.Timeout, remainingBudget(ctx, s.timeout))
 
-	results, discovered, queried, dropped := s.fanout(ctx, r, agents, target)
+	// A check whose targets all failed to connect/authenticate is still a
+	// successful agent operation from the UI's perspective — it ran and
+	// reported structured per-node results — so this always writes 200. Only
+	// a request the UI itself could not process (bad input, throttled, denied
+	// discovery) gets a non-200 status, and those all return earlier above.
+	results, discovered, queried, dropped := s.fanout(ctx, r, agents, target, auth)
 	writeJSON(w, http.StatusOK, Response{
 		Target:     target,
 		Agents:     results,
@@ -186,14 +248,14 @@ func (s *Server) handleAPICheck(w http.ResponseWriter, r *http.Request) {
 // Addr), runs the bounded fan-out, and returns the results plus the
 // discovered/queried/dropped counts so callers can report partial results
 // unambiguously. A positive drop count is also surfaced as an audit event.
-func (s *Server) fanout(ctx context.Context, r *http.Request, agents []discovery.Agent, target Target) (results []AgentResult, discovered, queried, dropped int) {
+func (s *Server) fanout(ctx context.Context, r *http.Request, agents []discovery.Agent, target Target, auth *PostgresAuth) (results []AgentResult, discovered, queried, dropped int) {
 	discovered = len(agents)
 	selected, dropped := selectAgents(agents, s.fanoutCfg.MaxAgentsPerCheck)
 	queried = len(selected)
 	if dropped > 0 {
 		s.logDrop(r, target, discovered, queried, dropped)
 	}
-	results = CheckAll(ctx, s.client, selected, target, s.agentToken, s.fanoutCfg.MaxConcurrentFanout)
+	results = CheckAll(ctx, s.client, selected, target, auth, s.agentToken, s.fanoutCfg.MaxConcurrentFanout)
 	return results, discovered, queried, dropped
 }
 
