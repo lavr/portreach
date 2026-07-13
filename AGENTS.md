@@ -155,8 +155,7 @@ UI env mirrors flags: `PORTREACH_AGENTS`, `PORTREACH_AGENTS_DNS`,
   audited (`postgres_check` event, no password). The SSRF metadata guard runs before any
   handshake **and** on the prober's own dial. ⚠️ The UI→agent hop is plain HTTP in this
   release — the token authorizes but does not encrypt, so the password crosses it in
-  cleartext; native agent TLS is a separate plan
-  (`docs/superpowers/specs/2026-07-12-agent-tls-design.md`).
+  cleartext; native agent TLS is a separate, future plan.
 - **Commits**: no `Co-Authored-By` trailer and no AI-attribution lines in commit
   messages or PR descriptions.
 

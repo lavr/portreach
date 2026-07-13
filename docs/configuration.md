@@ -379,8 +379,8 @@ The result gains an `auth` block:
 > token *authorizes* the request but does **not** encrypt it, so the password
 > crosses that hop in cleartext. Only enable the postgres check on a trusted
 > network path (or a service-mesh/TLS-terminating layer) until native agent TLS
-> ships — see `docs/superpowers/specs/2026-07-12-agent-tls-design.md`. TLS from
-> the agent to PostgreSQL (the third hop) is on by default, as above.
+> ships (a separate, future plan). TLS from the agent to PostgreSQL (the third
+> hop) is on by default, as above.
 
 ## Discovery examples
 
