@@ -230,8 +230,7 @@ is audited without the password.
 > ⚠️ **The UI → agent hop is plain HTTP.** The bearer token authorizes but does
 > not encrypt, so a Postgres password crosses that hop in cleartext. Enable this
 > check only on a trusted network path (or behind a service mesh / TLS layer)
-> until native agent TLS ships — see
-> `docs/superpowers/specs/2026-07-12-agent-tls-design.md`. Agent → PostgreSQL TLS
+> until native agent TLS ships (a separate, future plan). Agent → PostgreSQL TLS
 > is on with verification by default.
 
 ### NetworkPolicy (best-effort) and strict isolation
