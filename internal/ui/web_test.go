@@ -179,7 +179,7 @@ func TestIndexLocalizedResultsRussian(t *testing.T) {
 		t.Fatalf("status = %d, want 200", code)
 	}
 	// Localized table headers, open/closed cells and summary line.
-	for _, want := range []string{"узел", "задержка", "открыт", "закрыт", "1/2 агентов достигли example:80/tcp"} {
+	for _, want := range []string{"узел", "задержка", "открыт", "закрыт", ":80", "1/2 агентов достигли example:80/tcp"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Russian results missing %q:\n%s", want, body)
 		}
