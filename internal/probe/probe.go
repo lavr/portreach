@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/lavr/portreach/internal/checkapi"
 )
 
 // DefaultTimeout is used when the caller passes a non-positive timeout.
@@ -74,6 +75,14 @@ type Result struct {
 	// response byte-identical to before these fields existed.
 	Denied       bool   `json:"denied,omitempty"`
 	DeniedReason string `json:"denied_reason,omitempty"`
+
+	// Auth carries the protocol-level auth-probe outcome (e.g. a Postgres login
+	// attempt) and is set only by a protocol runner that performs a handshake on
+	// the winning connection. The TCP runner never touches it, so json:omitempty
+	// keeps a TCP response byte-identical to before this field existed; a future
+	// Postgres runner (Task 4) fills it after the shared dial layer hands it the
+	// open conn.
+	Auth *checkapi.AuthResult `json:"auth,omitempty"`
 }
 
 // DenyReason is the fixed reason reported when the connect guard denies a probe.
@@ -182,6 +191,12 @@ func Validate(host string, port int, proto string, timeout time.Duration) (strin
 //
 // It never panics: failures are recorded in the returned Result rather than
 // returned as an error (except invalid input).
+//
+// Run is the TCP runner: it delegates the DNS-report + concurrent-dial core to
+// the shared connect layer (see connect) and, because a TCP reachability check
+// needs nothing beyond the fact that an address opened plus its source IP,
+// immediately closes the winning connection. A protocol runner instead keeps
+// that conn to drive a handshake (Task 4).
 func Run(ctx context.Context, host string, dialHosts []string, port int, proto string, timeout time.Duration, dns *DNSResult, guard *DenyGuard) Result {
 	proto, timeout, err := Validate(host, port, proto, timeout)
 	res := Result{Host: host, Port: port, Proto: proto}
@@ -189,34 +204,13 @@ func Run(ctx context.Context, host string, dialHosts []string, port int, proto s
 		res.Error = err.Error()
 		return res
 	}
-	if len(dialHosts) == 0 {
-		dialHosts = []string{host}
-	}
 
-	deadline := time.Now().Add(timeout)
-
-	if dns != nil {
-		res.DNS = dns
-	} else {
-		dnsCtx, cancel := context.WithDeadline(ctx, deadline)
-		defer cancel()
-		res.DNS = resolve(dnsCtx, host)
-	}
-
-	dialCtx, cancel2 := context.WithDeadline(ctx, deadline)
-	defer cancel2()
-
-	var guardHit bool
-	res.TCP, res.SrcIP, guardHit = dial(dialCtx, dialHosts, port, guard)
-
-	// Promote a connect-guard rejection to a typed denial only when the dial as a
-	// whole found no reachable address. If an allowed sibling connected first the
-	// denied IP was never reached, so the result stays a normal OK (the narrowed
-	// mixed-RRset semantics). guardHit is read after dial has fully returned, so
-	// the atomic is settled — no race with in-flight workers.
-	if guardHit && (res.TCP == nil || !res.TCP.OK) {
-		res.Denied = true
-		res.DeniedReason = DenyReason
+	conn := connect(ctx, host, dialHosts, port, timeout, dns, guard, &res)
+	if conn != nil {
+		// TCP only needs reachability + source IP (already recorded in res), so
+		// the winning connection is closed right away. Losing conns were closed
+		// inside the shared layer; this closes the single winner it handed back.
+		_ = conn.Close()
 	}
 	return res
 }
@@ -237,133 +231,6 @@ func resolve(ctx context.Context, host string) *DNSResult {
 
 	if cname, err := r.LookupCNAME(ctx, host); err == nil {
 		out.CNAME = cname
-	}
-	return out
-}
-
-// dial races a TCP connection to every host and reports the first that succeeds,
-// then cancels the rest. Dialing the vetted addresses in parallel (rather than
-// one after another) reproduces the Happy Eyeballs behavior net.Dialer applies
-// internally for a hostname: a dual-stack or round-robin target is reachable as
-// long as ANY of its concurrently-dialed addresses is, and a slow or blackholing
-// address can never consume the deadline at the expense of a sibling dialed in
-// the same wave. This holds even for a short timeout, where a serial fallback
-// would spend the whole budget on a single hanging address.
-//
-// The race runs through a bounded pool of at most maxConcurrentDials workers, so
-// a name resolving to many addresses cannot fan out into an unbounded number of
-// simultaneous sockets and goroutines. Concurrency is capped, not coverage: every
-// distinct address is fed to the pool. But the cap and the single shared deadline
-// interact — for an RRset larger than maxConcurrentDials, if the first wave of
-// workers all blackhole until the deadline, addresses queued behind them get only
-// an already-expired dial. The "reachable as long as ANY address is" guarantee is
-// therefore unconditional only up to maxConcurrentDials addresses; for larger
-// RRsets it is best-effort (see that constant for why this tradeoff is accepted).
-// It returns the dial result, the local source IP observed on the winning
-// connection (empty if every dial failed), and whether the connect guard refused
-// at least one address. The full timeout applies to the race as a whole.
-func dial(ctx context.Context, hosts []string, port int, guard *DenyGuard) (*DialResult, string, bool) {
-	out := &DialResult{}
-	portStr := strconv.Itoa(port)
-	start := time.Now()
-
-	// Dedup repeated records (a name can return the same address more than once)
-	// but feed every distinct address to the pool: truncating the list would let a
-	// host whose only reachable address sorts late — e.g. an IPv6-only-reachable,
-	// dual-stack target where the IPv4 records come first — be falsely reported
-	// down. The pool bounds concurrency, not the set of addresses fed in; for an
-	// RRset larger than maxConcurrentDials a late address is still attempted unless
-	// the first wave consumes the whole deadline (see maxConcurrentDials).
-	hosts = dedup(hosts)
-
-	// Cancelling stops the remaining in-flight dials once we have a winner.
-	dctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	type outcome struct {
-		srcIP string
-		err   error
-	}
-	// Buffered for every address so each worker sends exactly once and exits even
-	// after we stop reading on the first success — no goroutine or connection leak.
-	ch := make(chan outcome, len(hosts))
-
-	workers := len(hosts)
-	if workers > maxConcurrentDials {
-		workers = maxConcurrentDials
-	}
-
-	// Feed addresses to the worker pool. Sends are gated by the workers ranging
-	// over addrCh, so at most `workers` dials are in flight at once. Once a winner
-	// cancels dctx the remaining DialContext calls return immediately, draining
-	// the queue quickly; we still read one outcome per address below.
-	addrCh := make(chan string)
-	go func() {
-		defer close(addrCh)
-		for _, host := range hosts {
-			addrCh <- net.JoinHostPort(host, portStr)
-		}
-	}()
-
-	// guardHit records whether the connect guard refused any address. It is shared
-	// across the worker pool (and net.Dialer's own Happy-Eyeballs attempts), so it
-	// must be atomic; Run reads it only after every worker has finished.
-	var guardHit atomic.Bool
-	var d net.Dialer
-	if guard != nil {
-		d.Control = guard.control(&guardHit)
-	}
-	for i := 0; i < workers; i++ {
-		go func() {
-			for addr := range addrCh {
-				conn, err := d.DialContext(dctx, "tcp", addr)
-				if err != nil {
-					ch <- outcome{err: err}
-					continue
-				}
-				srcIP := ""
-				if la, ok := conn.LocalAddr().(*net.TCPAddr); ok {
-					srcIP = la.IP.String()
-				}
-				_ = conn.Close() // the probe only needs reachability + source IP
-				ch <- outcome{srcIP: srcIP}
-			}
-		}()
-	}
-
-	var lastErr error
-	winnerSrc := ""
-	for range hosts {
-		o := <-ch
-		if o.err != nil {
-			lastErr = o.err
-			continue
-		}
-		if !out.OK {
-			out.OK = true
-			out.MS = msSince(start)
-			winnerSrc = o.srcIP
-			cancel() // abort the remaining dials; we already have a connection
-		}
-	}
-	if out.OK {
-		return out, winnerSrc, guardHit.Load()
-	}
-	out.MS = msSince(start)
-	out.Error = normalizeErr(lastErr)
-	return out, "", guardHit.Load()
-}
-
-// dedup returns the unique hosts in their original order.
-func dedup(hosts []string) []string {
-	seen := make(map[string]struct{}, len(hosts))
-	out := make([]string, 0, len(hosts))
-	for _, h := range hosts {
-		if _, ok := seen[h]; ok {
-			continue
-		}
-		seen[h] = struct{}{}
-		out = append(out, h)
 	}
 	return out
 }

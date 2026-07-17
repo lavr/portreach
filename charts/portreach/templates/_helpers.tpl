@@ -157,6 +157,35 @@ existing Secret is supplied; the chart manages the Secret only for a literal.
 {{- if or $a.token $a.existingSecret -}}true{{- end -}}
 {{- end -}}
 
+{{/*
+Validate the enabled-checks wiring across both workloads at render time. Fails
+the render (rather than shipping a broken deploy) when:
+  - the UI offers a check the agent does not serve — the UI would fan a check
+    out to an agent endpoint that isn't registered and 404s; or
+  - the postgres check is enabled on either workload without an agent shared
+    token — postgres sends a password to every agent, so an unauthenticated
+    agent endpoint would be sprayed with credentials (the same fail-closed rule
+    the binaries enforce at startup, surfaced here before anything is applied).
+*/}}
+{{- define "portreach.validateChecks" -}}
+{{- $ui := .Values.ui.enabledChecks | default (list "tcp") -}}
+{{- $agent := .Values.agent.enabledChecks | default (list "tcp") -}}
+{{- if and .Values.ui.enabled .Values.agent.enabled -}}
+{{- range $c := $ui -}}
+{{- if not (has $c $agent) -}}
+{{- fail (printf "portreach: ui.enabledChecks contains %q but agent.enabledChecks (%v) does not serve it — the UI would fan out to an agent endpoint that returns 404. Add %q to agent.enabledChecks." $c $agent $c) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $pgUI := and .Values.ui.enabled (has "postgres" $ui) -}}
+{{- $pgAgent := and .Values.agent.enabled (has "postgres" $agent) -}}
+{{- if or $pgUI $pgAgent -}}
+{{- if ne (include "portreach.agent.token.enabled" .) "true" -}}
+{{- fail "portreach: the postgres check is enabled but no agent shared token is configured (set agent.auth.token or agent.auth.existingSecret). A postgres check sends credentials to every agent, so it must never reach an unauthenticated endpoint." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "portreach.agent.token.secretName" -}}
 {{- $a := .Values.agent.auth | default dict -}}
 {{- $a.existingSecret | default (printf "%s-token" (include "portreach.agent.fullname" .)) -}}

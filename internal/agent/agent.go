@@ -7,14 +7,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/lavr/portreach/internal/checkapi"
 	"github.com/lavr/portreach/internal/probe"
 	"github.com/lavr/portreach/internal/ratelimit"
 )
@@ -133,6 +134,32 @@ type Server struct {
 	// (see WithLimiter). Nil = unlimited, the backward-compatible default.
 	limiter *ratelimit.Limiter
 
+	// postgresLimiter is a SEPARATE limiter layered on top of limiter for the
+	// postgres endpoint only: an auth probe drives a real login attempt (and,
+	// on success, a live query) against the target, so it warrants a tighter,
+	// dedicated budget rather than sharing the general check limiter's buckets.
+	// New auto-builds one with the built-in defaults whenever the postgres
+	// check is enabled, unless disablePostgresRateLimit opts out or a caller
+	// supplied one directly via WithPostgresLimiter. Both limiters are
+	// consulted independently (see allow/allowPostgres) — tripping one never
+	// spends tokens from the other.
+	postgresLimiter *ratelimit.Limiter
+	// disablePostgresRateLimit, set via WithDisablePostgresRateLimit, is the
+	// only way to opt out of the auto-built postgres limiter above.
+	disablePostgresRateLimit bool
+
+	// postgres is the Postgres check runner. Its zero value uses the real
+	// pgconn-backed prober (see probe.Postgres.prober); tests set Prober to a
+	// fake so the postgres handler's wiring can be exercised without a real
+	// PostgreSQL server, mirroring how resolver is overridden directly in
+	// tests below.
+	postgres probe.Postgres
+
+	// logger receives the postgres check audit trail (see auditPostgres). A
+	// nil logger falls back to slog.Default(), matching internal/auth's audit
+	// pattern.
+	logger *slog.Logger
+
 	// token, when non-empty, is the shared bearer secret required on /check and
 	// (unless metricsPublic) /metrics. Empty disables the check entirely, keeping
 	// the agent open — the backward-compatible default.
@@ -140,6 +167,16 @@ type Server struct {
 	// metricsPublic re-opens /metrics for unauthenticated scraping (Prometheus)
 	// even when a token is configured. /check stays gated regardless.
 	metricsPublic bool
+
+	// enabledChecks is the --enabled-checks allowlist (default tcp-only; see
+	// checkapi.ParseEnabledChecks). Handler consults it to decide which check
+	// routes to register at all: a disabled check's route is never added to
+	// the mux, so a request for it 404s exactly like any other unknown path.
+	// It never governs /healthz or /metrics, which stay available regardless.
+	// An empty set is a startup configuration error (see
+	// checkapi.EnabledChecks.RequireNonEmpty), enforced by the cmd layer
+	// before New is ever called.
+	enabledChecks checkapi.EnabledChecks
 }
 
 // Option configures a Server built by New.
@@ -165,6 +202,52 @@ func WithAllowMetadata(allow bool) Option {
 	return func(s *Server) { s.allowMetadata = allow }
 }
 
+// WithEnabledChecks sets the --enabled-checks allowlist this agent serves.
+// The zero value (checkapi.EnabledChecks{}) enables nothing; New does not
+// substitute a default — cmd is responsible for resolving the "tcp" default
+// via checkapi.ParseEnabledChecks before calling New.
+func WithEnabledChecks(checks checkapi.EnabledChecks) Option {
+	return func(s *Server) { s.enabledChecks = checks }
+}
+
+// WithPostgresLimiter overrides the postgres-specific limiter New would
+// otherwise auto-build (see the postgresLimiter field doc). Tests use this to
+// inject a limiter with an injected clock (ratelimit.WithClock) so the 429
+// path is exercised hermetically; production code should prefer
+// WithDisablePostgresRateLimit to opt out rather than supplying a permissive
+// limiter here.
+func WithPostgresLimiter(l *ratelimit.Limiter) Option {
+	return func(s *Server) { s.postgresLimiter = l }
+}
+
+// WithDisablePostgresRateLimit opts out of the auto-built postgres limiter
+// entirely (the only supported way to disable it — see the postgresLimiter
+// field doc). The general /check limiter (WithLimiter), if any, still applies.
+func WithDisablePostgresRateLimit(disable bool) Option {
+	return func(s *Server) { s.disablePostgresRateLimit = disable }
+}
+
+// WithLogger sets the slog.Logger used for the postgres check audit trail
+// (see auditPostgres). A nil logger is ignored, leaving the default
+// (slog.Default()).
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Server) {
+		if l != nil {
+			s.logger = l
+		}
+	}
+}
+
+// auditLogger returns the configured audit logger, falling back to the
+// process default so a Server built without WithLogger (e.g. in tests) still
+// logs.
+func (s *Server) auditLogger() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
+}
+
 // New builds an agent Server. An empty nodeName is resolved via NodeName; a nil
 // policy means allow-all.
 func New(nodeName string, policy *Policy, opts ...Option) *Server {
@@ -183,6 +266,19 @@ func New(nodeName string, policy *Policy, opts ...Option) *Server {
 	if !s.allowMetadata {
 		s.guard = probe.NewDenyGuard(metadataNets())
 	}
+	// Auto-build the postgres-specific limiter whenever the postgres check is
+	// served, unless the operator opted out or already supplied one via
+	// WithPostgresLimiter (checked after options so both overrides apply).
+	// The bounds are fixed, known-good constants (see postgresLimiterConfig),
+	// so a Validate failure here would only mean one of them regressed — a
+	// programming error, not a runtime condition to recover from.
+	if s.enabledChecks.Has(checkapi.CheckPostgres) && !s.disablePostgresRateLimit && s.postgresLimiter == nil {
+		lim, err := ratelimit.New(postgresLimiterConfig)
+		if err != nil {
+			panic("agent: built-in postgres limiter config is invalid: " + err.Error())
+		}
+		s.postgresLimiter = lim
+	}
 	return s
 }
 
@@ -198,12 +294,22 @@ func NodeName() string {
 	return "unknown"
 }
 
-// Handler returns the agent's HTTP routes. /check (and /metrics, unless
-// metricsPublic) require the bearer token when one is configured; /healthz is
-// always open so cluster probes do not need the secret.
+// Handler returns the agent's HTTP routes. Each check endpoint
+// (/api/check/tcp, /api/check/postgres) is registered only when the
+// corresponding check is in enabledChecks — a disabled check's route is never
+// added to the mux, so a request for it 404s exactly like any unknown path,
+// rather than the handler having to reject it itself. The check endpoints
+// (and /metrics, unless metricsPublic) require the bearer token when one is
+// configured; /healthz is always open so cluster probes do not need the
+// secret.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/check", s.requireToken(s.handleCheck))
+	if s.enabledChecks.Has(checkapi.CheckTCP) {
+		mux.HandleFunc("/api/check/tcp", s.requireToken(requireMethod(http.MethodPost, s.handleCheckTCP)))
+	}
+	if s.enabledChecks.Has(checkapi.CheckPostgres) {
+		mux.HandleFunc("/api/check/postgres", s.requireToken(requireMethod(http.MethodPost, s.handleCheckPostgres)))
+	}
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	if s.metricsPublic {
 		mux.HandleFunc("/metrics", s.handleMetrics)
@@ -211,6 +317,21 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/metrics", s.requireToken(s.handleMetrics))
 	}
 	return mux
+}
+
+// requireMethod rejects any request whose method isn't method with a 405
+// before next ever sees it. The check endpoints take a JSON body and have no
+// meaningful query-string form, so a non-POST request is a protocol error
+// (wrong verb), not a validation failure on the payload — hence 405, not 400.
+func requireMethod(method string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			w.Header().Set("Allow", method)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		next(w, r)
+	}
 }
 
 // requireToken wraps next so it only runs when the request carries the right
@@ -239,98 +360,38 @@ func (s *Server) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
+// checkResponse is the shared response envelope for both check endpoints: the
+// serving node's name alongside the probe's structured Result. A check that
+// itself failed (TCP refused, auth rejected, TLS error, ...) is still a
+// successful agent operation, so it is reported here with 200 — see
+// handleCheckTCP/handleCheckPostgres in checkhandlers.go for the 200-vs-4xx
+// boundary this type sits on.
 type checkResponse struct {
 	Node string `json:"node"`
 	probe.Result
 }
 
-func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	host := q.Get("host")
-	proto := q.Get("proto")
-	if proto == "" {
-		proto = "tcp"
-	}
+// denied writes the standard 403 response for a policy/metadata refusal and
+// increments the denied metric. Shared by both check handlers so a guard hit
+// or a resolveTarget policy denial look identical to clients regardless of
+// which check kind (or which rejection path) produced it.
+func (s *Server) denied(w http.ResponseWriter) {
+	s.metrics.denied.Add(1)
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "target denied by policy"})
+}
 
-	port, err := strconv.Atoi(q.Get("port"))
-	if err != nil {
-		s.badRequest(w, "invalid port: "+q.Get("port"))
-		return
-	}
-
-	timeout := probe.DefaultTimeout
-	if ts := q.Get("timeout"); ts != "" {
-		d, err := time.ParseDuration(ts)
-		if err != nil {
-			s.badRequest(w, "invalid timeout: "+ts)
-			return
-		}
-		timeout = d
-	}
-
-	proto, timeout, err = probe.Validate(host, port, proto, timeout)
-	if err != nil {
-		s.badRequest(w, err.Error())
-		return
-	}
-
-	// Defence-in-depth rate limit on direct /check calls. Gate after validation
-	// (so a valid host:port keys the bucket) but before any DNS/dial work, so a
-	// throttled request is cheap. A nil limiter always allows (unlimited).
-	if retry, ok := s.allow(host, port); !ok {
-		s.metrics.throttled.Add(1)
-		ra := ratelimit.RetryAfterSeconds(retry)
-		w.Header().Set("Retry-After", ra)
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{
-			"error":       "rate limit exceeded",
-			"retry_after": ra,
-		})
-		return
-	}
-
-	// Bound the policy DNS resolution by the same capped timeout the probe uses.
-	// resolveTarget's LookupIPAddr runs before the probe and would otherwise sit
-	// on the bare request context (no deadline), letting a hostile or blackholed
-	// name pin the request well past probe.MaxTimeout — the request-pinning DoS
-	// the cap exists to prevent, just on the policy-resolution step.
-	resolveCtx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-
-	dialHosts, dns, ok := s.resolveTarget(resolveCtx, host)
-	if !ok {
-		s.metrics.denied.Add(1)
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "target denied by policy"})
-		return
-	}
-
-	// The dial uses the vetted dialHosts (IP literals when a policy is active) to
-	// stay rebinding-safe. When the policy already resolved host, that lookup is
-	// passed through as dns so probe.Run reports the exact vetted address set
-	// rather than resolving a second time — a second lookup would both spend more
-	// of the shared timeout before any TCP attempt and could report a different
-	// answer set than the one actually dialed/authorized (rebinding or round-robin
-	// churn between the two queries). With no policy, dns is nil and probe.Run
-	// resolves host itself for reporting. resolveCtx is reused (not r.Context())
-	// so the policy resolution and the probe share a single timeout budget —
-	// context.WithDeadline keeps the earlier resolveCtx deadline, making timeout
-	// the real end-to-end cap instead of being spent once per step.
-	res := probe.Run(resolveCtx, host, dialHosts, port, proto, timeout, dns, s.guard)
-
-	// A connect-guard refusal (cloud metadata / link-local) surfaces as res.Denied.
-	// Route it to the exact same denial path as a resolveTarget policy deny —
-	// increment the denied metric and return the same 403 shape — so metadata and
-	// policy denials are indistinguishable to clients.
-	if res.Denied {
-		s.metrics.denied.Add(1)
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "target denied by policy"})
-		return
-	}
-	if res.TCP != nil && res.TCP.OK {
-		s.metrics.ok.Add(1)
-	} else {
-		s.metrics.fail.Add(1)
-	}
-	writeJSON(w, http.StatusOK, checkResponse{Node: s.nodeName, Result: res})
+// throttled writes the standard 429 response (with a Retry-After hint derived
+// from the limiter's reservation delay) and increments the throttled metric.
+// Shared by both check handlers and by both limiters (general + postgres) that
+// can produce this outcome.
+func (s *Server) throttled(w http.ResponseWriter, retry time.Duration) {
+	s.metrics.throttled.Add(1)
+	ra := ratelimit.RetryAfterSeconds(retry)
+	w.Header().Set("Retry-After", ra)
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{
+		"error":       "rate limit exceeded",
+		"retry_after": ra,
+	})
 }
 
 // resolveTarget enforces the connection policy and returns the addresses to

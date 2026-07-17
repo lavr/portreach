@@ -80,7 +80,7 @@ func TestBearerAuditCarriesIdentityAndMethod(t *testing.T) {
 
 	// Middleware injects identity + method; AuditCheck reads them off the context.
 	h := a.Middleware(AuditCheck(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})))
-	req := httptest.NewRequest(http.MethodGet, apiCheckPath+"?host=db&port=5432", nil)
+	req := jsonReq(apiCheckTCPPath, `{"host":"db","port":5432}`)
 	req.Header.Set("Authorization", "Bearer "+bi.mint(t, map[string]any{"sub": "alice"}))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 

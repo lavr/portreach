@@ -13,7 +13,8 @@ import (
 
 // WithLimiter attaches an optional API rate limiter to the UI. A nil limiter
 // (the default) leaves the UI unlimited — today's behaviour. The limiter gates
-// both /api/check and a submitted / form before any discovery or fan-out work.
+// both /api/check/tcp, /api/check/postgres, and a submitted / form before any
+// discovery or fan-out work.
 func WithLimiter(l *ratelimit.Limiter) Option {
 	return func(s *Server) { s.limiter = l }
 }
@@ -26,6 +27,52 @@ func WithLogger(l *slog.Logger) Option {
 			s.logger = l
 		}
 	}
+}
+
+// uiPostgresLimiterUserPerMin, uiPostgresLimiterTargetPerMin,
+// uiPostgresLimiterGlobalPerMin and their paired burst constants are the
+// built-in, non-configurable bound for the UI's postgres-specific limiter
+// (see the Server.postgresLimiter field doc): per-user 6/min burst 3,
+// per-target 12/min burst 3, global 60/min burst 10. Unlike the agent's
+// postgres limiter (internal/agent/ratelimit.go), the UI adds a per-user
+// scope — the UI, unlike the agent, has an identity to key on (see
+// identityKey) — layered on top of the same per-target/global bounds the
+// agent uses, since a Postgres check drives a real authentication attempt
+// (and, on success, a live query) against the target regardless of which
+// layer gates it.
+const (
+	uiPostgresLimiterUserPerMin   = 6
+	uiPostgresLimiterUserBurst    = 3
+	uiPostgresLimiterTargetPerMin = 12
+	uiPostgresLimiterTargetBurst  = 3
+	uiPostgresLimiterGlobalPerMin = 60
+	uiPostgresLimiterGlobalBurst  = 10
+)
+
+// uiPostgresLimiterConfig converts the per-minute constants above into
+// ratelimit.Scope's tokens/sec unit.
+var uiPostgresLimiterConfig = ratelimit.Config{
+	Enabled: true,
+	User:    ratelimit.Scope{Rate: uiPostgresLimiterUserPerMin / 60.0, Burst: uiPostgresLimiterUserBurst},
+	Target:  ratelimit.Scope{Rate: uiPostgresLimiterTargetPerMin / 60.0, Burst: uiPostgresLimiterTargetBurst},
+	Global:  ratelimit.Scope{Rate: uiPostgresLimiterGlobalPerMin / 60.0, Burst: uiPostgresLimiterGlobalBurst},
+}
+
+// WithPostgresLimiter overrides the postgres-specific limiter New would
+// otherwise auto-build (see the postgresLimiter field doc). Tests use this to
+// inject a limiter with an injected clock (ratelimit.WithClock) so the 429
+// path is exercised hermetically; production code should prefer
+// WithDisablePostgresRateLimit to opt out rather than supplying a permissive
+// limiter here.
+func WithPostgresLimiter(l *ratelimit.Limiter) Option {
+	return func(s *Server) { s.postgresLimiter = l }
+}
+
+// WithDisablePostgresRateLimit opts out of the auto-built postgres limiter
+// entirely (the only supported way to disable it — see the postgresLimiter
+// field doc). The general limiter (WithLimiter), if any, still applies.
+func WithDisablePostgresRateLimit(disable bool) Option {
+	return func(s *Server) { s.disablePostgresRateLimit = disable }
 }
 
 // auditLogger returns the configured logger, falling back to the process default
@@ -49,6 +96,26 @@ func (s *Server) allow(r *http.Request, target Target) (retryAfter time.Duration
 	idKey := s.identityKey(r)
 	targetKey := net.JoinHostPort(target.Host, strconv.Itoa(target.Port))
 	res := s.limiter.Reserve(idKey, targetKey)
+	if res.OK {
+		return 0, true
+	}
+	s.logThrottle(r, idKey, targetKey, res.RetryAfter)
+	return res.RetryAfter, false
+}
+
+// allowPostgres gates one postgres check against the dedicated postgres
+// limiter (see the Server.postgresLimiter field doc). It is consulted in
+// addition to allow, never instead of it — both apply, using independent
+// *ratelimit.Limiter instances (and therefore independent buckets), so
+// tripping one never spends tokens the other is tracking. A nil limiter
+// (postgres limiter disabled or never built) always allows.
+func (s *Server) allowPostgres(r *http.Request, target Target) (retryAfter time.Duration, ok bool) {
+	if s.postgresLimiter == nil {
+		return 0, true
+	}
+	idKey := s.identityKey(r)
+	targetKey := net.JoinHostPort(target.Host, strconv.Itoa(target.Port))
+	res := s.postgresLimiter.Reserve(idKey, targetKey)
 	if res.OK {
 		return 0, true
 	}

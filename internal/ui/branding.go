@@ -1,5 +1,7 @@
 package ui
 
+import "github.com/lavr/portreach/internal/checkapi"
+
 // Branding customises operator-controlled HTML blocks on the main UI page.
 // Title is tri-state: nil keeps the localized default, non-nil uses the value
 // (including "" to suppress the heading). Description and Footer are omitted
@@ -35,5 +37,15 @@ func WithAgentToken(token string) Option {
 func WithFanout(c FanoutConfig) Option {
 	return func(s *Server) {
 		s.fanoutCfg = c
+	}
+}
+
+// WithEnabledChecks sets the --enabled-checks allowlist this UI offers. The
+// zero value (checkapi.EnabledChecks{}) enables nothing; New does not
+// substitute a default — cmd is responsible for resolving the "tcp" default
+// via checkapi.ParseEnabledChecks before calling New.
+func WithEnabledChecks(checks checkapi.EnabledChecks) Option {
+	return func(s *Server) {
+		s.enabledChecks = checks
 	}
 }

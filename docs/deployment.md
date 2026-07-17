@@ -113,7 +113,7 @@ cluster DNS domain — **not just `cluster.local`**:
 
 > **Non-`cluster.local` caveat:** an absolute `…svc.cluster.local` resolves to
 > NXDOMAIN on clusters whose domain differs (e.g. `kubeprodone.example.ru`),
-> leaving the UI with zero agents (`/api/check` → 502). The default `relative`
+> leaving the UI with zero agents (the check API → 502). The default `relative`
 > mode avoids pinning the domain, so the chart is portable out of the box; use
 > for `fqdn` + `clusterDomain` only when you need an absolute name.
 
@@ -201,6 +201,37 @@ agent:
   `tokenSecretKey` (default `agent-token`).
 - `agent.metricsPublic: true` re-opens `/metrics` for Prometheus while keeping
   `/check` gated (see [/metrics gating](configuration.md#metrics-gating)).
+
+### PostgreSQL check (opt-in, credentialed)
+
+The credentialed PostgreSQL check is **off by default**. Enable it on **both**
+workloads and provide an agent token — the chart fails the render otherwise:
+
+```yaml
+ui:
+  enabledChecks: [tcp, postgres]
+agent:
+  enabledChecks: [tcp, postgres]
+  auth:
+    token: "<openssl rand -hex 32>"   # REQUIRED when postgres is enabled
+```
+
+Render-time validation (see `templates/validate.yaml`) fails closed when:
+
+- a check is enabled on the UI but not the agent (the UI would fan out to a 404
+  endpoint), or
+- `postgres` is enabled anywhere without `agent.auth.token` /
+  `agent.auth.existingSecret`.
+
+The postgres rate limiter is auto-on (disable with
+`ui.disablePostgresRateLimit` / `agent.disablePostgresRateLimit`); every request
+is audited without the password.
+
+> ⚠️ **The UI → agent hop is plain HTTP.** The bearer token authorizes but does
+> not encrypt, so a Postgres password crosses that hop in cleartext. Enable this
+> check only on a trusted network path (or behind a service mesh / TLS layer)
+> until native agent TLS ships (a separate, future plan). Agent → PostgreSQL TLS
+> is on with verification by default.
 
 ### NetworkPolicy (best-effort) and strict isolation
 

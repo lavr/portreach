@@ -93,7 +93,11 @@ or via the [systemd unit](examples/systemd/).
 
 ## API
 
-Agent `GET /check?host=&port=&proto=tcp&timeout=5s`:
+Checks are per-protocol `POST` endpoints on **both** the agent and the UI,
+registered only for the checks in `--enabled-checks` (default `tcp`):
+`POST /api/check/tcp` and `POST /api/check/postgres`.
+
+Agent `POST /api/check/tcp` with body `{"host":"db01","port":8123,"timeout":"5s"}`:
 
 ```json
 {"node":"node-w03","src_ip":"10.0.92.137","host":"db01","port":8123,
@@ -102,13 +106,22 @@ Agent `GET /check?host=&port=&proto=tcp&timeout=5s`:
  "tcp":{"ok":false,"ms":5002.0,"error":"i/o timeout"}}
 ```
 
-UI `GET /api/check?host=&port=&proto=&timeout=`:
+UI `POST /api/check/tcp` (same body) → aggregated:
 
 ```json
 {"target":{"host":"...","port":8123,"proto":"tcp"},
  "agents":[{"agent":"10.0.0.1:8732","node":"node-a", "...": "...probe fields..."}],
  "summary":{"ok":3,"total":5}}
 ```
+
+`POST /api/check/postgres` additionally takes `credentials` and `tls` and adds an
+`auth` block to each result — an **opt-in, off-by-default** credentialed check
+(SCRAM/MD5 via `jackc/pgx`, TLS-verified to the DB, `SELECT 1`). See
+[docs/configuration.md](docs/configuration.md#postgresql-check).
+
+> The pre-1.0 `GET /check` / `GET /api/check` endpoints were **removed** (no
+> alias) in favour of the POST endpoints above — credentials belong in a body,
+> not a URL.
 
 Both also expose `GET /healthz`; the agent exposes `GET /metrics`
 (Prometheus `portreach_checks_total{result=}`).
@@ -122,10 +135,11 @@ Both also expose `GET /healthz`; the agent exposes `GET /metrics`
 | `--listen` | `:8732` | listen address |
 | `--allow` | *(empty)* | comma-separated allow CIDR list (empty = allow all) |
 | `--deny` | *(empty)* | comma-separated deny CIDR list (wins over allow) |
-| `--auth-token` | *(empty)* | bearer token required on `/check` + `/metrics` (env `PORTREACH_AGENT_TOKEN`) |
-| `--metrics-public` | `false` | keep `/metrics` open when a token is set (`/check` stays gated) |
+| `--enabled-checks` | `tcp` | checks served: `tcp`, `postgres` (env `PORTREACH_ENABLED_CHECKS`); `postgres` requires `--auth-token` |
+| `--auth-token` | *(empty)* | bearer token required on `/api/check/*` + `/metrics` (env `PORTREACH_AGENT_TOKEN`) |
+| `--metrics-public` | `false` | keep `/metrics` open when a token is set (checks stay gated) |
 | `--allow-metadata` | `false` | remove the default-on metadata/link-local connect guard (`--deny` still wins) |
-| `--rate-limit` | `false` | optional `/check` rate limiter (`--rate-target-*` / `--rate-global-*`); off = unlimited |
+| `--rate-limit` | `false` | optional check rate limiter (`--rate-target-*` / `--rate-global-*`); off = unlimited |
 
 `NODE_NAME` (env) sets the point name reported by the agent; it falls back to
 the hostname.
@@ -139,7 +153,8 @@ the hostname.
 | `--agents-dns` | `PORTREACH_AGENTS_DNS` | | headless service name to resolve agents from |
 | `--agent-port` | `PORTREACH_AGENT_PORT` | `8732` | port for DNS-discovered / port-less agents |
 | `--timeout` | | `8s` | overall fan-out budget per check |
-| `--agent-token` | `PORTREACH_AGENT_TOKEN` | | bearer token sent to agents on `/check`; empty = none |
+| `--enabled-checks` | `PORTREACH_ENABLED_CHECKS` | `tcp` | checks offered: `tcp`, `postgres`; `postgres` requires `--agent-token` |
+| `--agent-token` | `PORTREACH_AGENT_TOKEN` | | bearer token sent to agents on `/api/check/*`; empty = none |
 | `--max-agents-per-check` | `PORTREACH_MAX_AGENTS_PER_CHECK` | `0` | cap agents queried per check; `0` = unlimited (every node) |
 | `--max-concurrent-fanout` | `PORTREACH_MAX_CONCURRENT_FANOUT` | `0` | bound concurrent per-check agent requests; `0` = unlimited |
 | `--rate-limit` | `PORTREACH_RATE_LIMIT` | `false` | API rate limiter (`--rate-user-*` / `--rate-target-*` / `--rate-global-*`); off = unlimited |
@@ -171,6 +186,14 @@ The agent makes outbound TCP connections on request — an SSRF vector. Mitigate
 A denied target resolves to HTTP 403. See
 [`docs/configuration.md`](docs/configuration.md) for details.
 
+**Protocol checks.** `--enabled-checks` (default `tcp`) selects which checks each
+binary serves; a disabled check's endpoint is a 404. The opt-in `postgres` check
+sends per-request credentials, so enabling it **requires** the agent token
+(fail-closed at startup), rate-limits and audits each attempt, and — until native
+agent TLS ships — carries the password over the UI→agent hop in cleartext, so
+enable it only on a trusted path. See
+[PostgreSQL check](docs/configuration.md#postgresql-check).
+
 ## Authentication (optional SSO)
 
 The UI can be put behind corporate single sign-on, with **multiple providers at
@@ -182,7 +205,7 @@ default**: with no config the UI runs exactly as before.
 Point `--auth-config` (or `PORTREACH_AUTH_CONFIG`) at a YAML file listing your
 providers and an `allowedUsers`/per-provider org/group allowlist. The login page
 always shows one button per provider; the session lives in a sealed
-(AES-256-GCM) cookie. `/healthz` stays public; `/` and `/api/check` are gated.
+(AES-256-GCM) cookie. `/healthz` stays public; `/` and `/api/check/*` are gated.
 
 Every login and reachability check is emitted as a structured `log/slog` JSON
 audit event on stdout (`who` ran `what` from `where`) for security pipelines;

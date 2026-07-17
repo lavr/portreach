@@ -56,6 +56,13 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - agent
+            {{- with .Values.agent.enabledChecks }}
+            - --enabled-checks
+            - {{ join "," . | quote }}
+            {{- end }}
+            {{- if .Values.agent.disablePostgresRateLimit }}
+            - --disable-postgres-rate-limit
+            {{- end }}
             - --listen
             - ":{{ .Values.agent.port }}"
             {{- with .Values.agent.targetPolicy.allow }}
