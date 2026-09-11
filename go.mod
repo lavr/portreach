@@ -1,16 +1,16 @@
 module github.com/lavr/portreach
 
-go 1.25.0
+go 1.26.0
 
 require gopkg.in/yaml.v3 v3.0.1
 
-require golang.org/x/text v0.40.0
+require golang.org/x/text v0.42.0
 
-require golang.org/x/oauth2 v0.36.0
+require golang.org/x/oauth2 v0.37.0
 
 require (
-	github.com/jackc/pgx/v5 v5.10.0
-	golang.org/x/time v0.15.0
+	github.com/jackc/pgx/v5 v5.11.0
+	golang.org/x/time v0.16.0
 )
 
 require (
@@ -21,6 +21,6 @@ require (
 )
 
 require (
-	github.com/coreos/go-oidc/v3 v3.20.0
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 )
